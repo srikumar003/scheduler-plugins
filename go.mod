@@ -1,6 +1,6 @@
 module sigs.k8s.io/scheduler-plugins
 
-go 1.15
+go 1.16
 
 require (
 	github.com/datashim-io/datashim/src/apiclient v0.0.0-20211213234305-cc463b9f305a

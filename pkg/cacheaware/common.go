@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	klog "k8s.io/klog/v2"
-	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
+	framework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 const (
@@ -20,6 +20,9 @@ const (
 	ErrReasonNoCacheDeployed = "Node does not have cache deployment for pod"
 	hostTopologyKey          = "kubernetes.io/hostname"
 )
+
+var _ framework.FilterPlugin = &CacheAwarePlugin{}
+var _ framework.ScorePlugin = &CacheAwarePlugin{}
 
 type CacheAwarePlugin struct {
 	handle framework.Handle
@@ -41,14 +44,14 @@ func NewCacheAwarePlugin(obj runtime.Object, h framework.Handle) (framework.Plug
 
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
-		klog.V(3).ErrorS(err, "Could not create instance for cache-aware plugin")
+		klog.V(3).Error(err, "Could not create instance for cache-aware plugin")
 		return nil, err
 	}
 
 	client, err := client.NewForConfig(cfg)
 
 	if err != nil {
-		klog.V(3).ErrorS(errors.NewInternalError(err), "Failed to set up connection to Datashim")
+		klog.V(3).Error(errors.NewInternalError(err), "Failed to set up connection to Datashim")
 		return nil, err
 	}
 
@@ -88,7 +91,7 @@ func (f *CacheAwarePlugin) fetchDatasetObjects(ctx context.Context, datasetName 
 		return nil, nil, err
 	}
 
-	datasetInternal, err := f.client.ComV1alpha1().DatasetInternals(namespace).Get(ctx, datasetName, metav1.GetOptions{})
+	datasetInternal, err := f.client.ComV1alpha1().DatasetInternal(namespace).Get(ctx, datasetName, metav1.GetOptions{})
 
 	if err != nil {
 		klog.V(1).InfoS("Could not retrieve datasetInternal for dataset from the apiserver", "datasetInternal", datasetName, "error", err)
@@ -169,7 +172,7 @@ func (f *CacheAwarePlugin) fetchAllGatewaysDataLocations(ctx context.Context, da
 				for _, g := range gw {
 					gNode, err := f.handle.SnapshotSharedLister().NodeInfos().Get(g)
 					if err != nil {
-						klog.V(2).ErrorS(err, "Could not find a node matching gateway", g)
+						klog.V(2).Error(err, "Could not find a node matching gateway", g)
 					} else {
 						gWays = append(gWays, gNode)
 					}
@@ -183,7 +186,7 @@ func (f *CacheAwarePlugin) fetchAllGatewaysDataLocations(ctx context.Context, da
 				for _, d := range dl {
 					dlNode, err := f.handle.SnapshotSharedLister().NodeInfos().Get(d)
 					if err != nil {
-						klog.V(2).ErrorS(err, "Could not find a node matching gateway", d)
+						klog.V(2).Error(err, "Could not find a node matching gateway", d)
 					} else {
 						dLocs = append(dLocs, dlNode)
 					}

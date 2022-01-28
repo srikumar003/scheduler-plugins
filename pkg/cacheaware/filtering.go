@@ -5,10 +5,8 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	klog "k8s.io/klog/v2"
-	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
+	framework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
-
-var _ framework.FilterPlugin = &CacheAwarePlugin{}
 
 //Filter extension invoked at the filter extension point
 //We will filter out all the nodes that are not in data locations

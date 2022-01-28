@@ -10,7 +10,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
+	framework "k8s.io/kubernetes/pkg/scheduler/framework"
 
 	fakeclient "github.com/datashim-io/datashim/src/apiclient/pkg/clientset/versioned/fake"
 	datashim "github.com/datashim-io/datashim/src/dataset-operator/pkg/apis/com/v1alpha1"
@@ -141,7 +141,7 @@ func TestUtilityFunctions(t *testing.T) {
 
 		}
 
-		_, err = client.ComV1alpha1().DatasetInternals(namespace).Create(ctx, datasetInternal, metav1.CreateOptions{})
+		_, err = client.ComV1alpha1().DatasetInternal(namespace).Create(ctx, datasetInternal, metav1.CreateOptions{})
 
 		if err != nil {
 			t.Errorf("Could not create datasetinternal instance: %v", err)

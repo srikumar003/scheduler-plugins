@@ -6,7 +6,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	klog "k8s.io/klog/v2"
-	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
+	framework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 type priorityWeight struct {
@@ -14,8 +14,6 @@ type priorityWeight struct {
 	neighbourWeight        int
 	balancedResourceWeight int
 }
-
-var _ framework.ScorePlugin = &CacheAwarePlugin{}
 
 //TODO (srikumarv) Update this to get the weights from the arguments
 func calculateWeight() priorityWeight {
@@ -59,7 +57,7 @@ func (f *CacheAwarePlugin) Score(ctx context.Context, state *framework.CycleStat
 	node, err := f.handle.SnapshotSharedLister().NodeInfos().Get(nodeName)
 
 	if err != nil {
-		klog.V(3).ErrorS(err, "could not retrieve information for node", nodeName)
+		klog.V(3).Error(err, "could not retrieve information for node", nodeName)
 		return 0, framework.AsStatus((fmt.Errorf("could not get information for node %s", nodeName)))
 	}
 
