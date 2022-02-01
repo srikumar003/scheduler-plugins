@@ -66,25 +66,26 @@ func TestPodStatePlugin(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg, err := util.NewDefaultSchedulerComponentConfig()
-			if err != nil {
-				t.Fatal(err)
-			}
-			cfg.Profiles[0].Plugins.Score = schedapi.PluginSet{
-				Enabled: []schedapi.Plugin{
-					{Name: podstate.Name},
+			registry := fwkruntime.Registry{podstate.Name: podstate.New}
+			profile := schedapi.KubeSchedulerProfile{
+				SchedulerName: v1.DefaultSchedulerName,
+				Plugins: &schedapi.Plugins{
+					Score: &schedapi.PluginSet{
+						Enabled: []schedapi.Plugin{
+							{Name: podstate.Name},
+						},
+						Disabled: []schedapi.Plugin{
+							{Name: "*"},
+						},
+					},
 				},
-				Disabled: []schedapi.Plugin{
-					{Name: "*"},
-				},
 			}
-
 			testCtx := util.InitTestSchedulerWithOptions(
 				t,
-				testutils.InitTestAPIServer(t, "sched-podstate", nil),
+				testutils.InitTestMaster(t, "sched-podstate", nil),
 				true,
-				scheduler.WithProfiles(cfg.Profiles...),
-				scheduler.WithFrameworkOutOfTreeRegistry(fwkruntime.Registry{podstate.Name: podstate.New}),
+				scheduler.WithProfiles(profile),
+				scheduler.WithFrameworkOutOfTreeRegistry(registry),
 			)
 			defer testutils.CleanupTest(t, testCtx)
 

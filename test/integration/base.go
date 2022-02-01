@@ -37,10 +37,13 @@ func podScheduled(c clientset.Interface, podNamespace, podName string) bool {
 	pod, err := c.CoreV1().Pods(podNamespace).Get(context.TODO(), podName, metav1.GetOptions{})
 	if err != nil {
 		// This could be a connection error so we want to retry.
-		klog.ErrorS(err, "Failed to get pod", "pod", klog.KRef(podNamespace, podName))
+		klog.Errorf("klog error %v", err)
 		return false
 	}
-	return pod.Spec.NodeName != ""
+	if pod.Spec.NodeName == "" {
+		return false
+	}
+	return true
 }
 
 type resourceWrapper struct{ v1.ResourceList }

@@ -40,29 +40,16 @@ import (
 	"sigs.k8s.io/scheduler-plugins/pkg/util"
 )
 
-type Status string
-
-const (
-	// PodGroupNotSpecified denotes no PodGroup is specified in the Pod spec.
-	PodGroupNotSpecified Status = "PodGroup not specified"
-	// PodGroupNotFound denotes the specified PodGroup in the Pod spec is
-	// not found in API server.
-	PodGroupNotFound Status = "PodGroup not found"
-	Success          Status = "Success"
-	Wait             Status = "Wait"
-)
-
 // Manager defines the interfaces for PodGroup management.
 type Manager interface {
 	PreFilter(context.Context, *corev1.Pod) error
-	Permit(context.Context, *corev1.Pod) Status
+	Permit(context.Context, *corev1.Pod, string) (bool, error)
 	PostBind(context.Context, *corev1.Pod, string)
 	GetPodGroup(*corev1.Pod) (string, *v1alpha1.PodGroup)
 	GetCreationTimestamp(*corev1.Pod, time.Time) time.Time
 	AddDeniedPodGroup(string)
 	DeletePermittedPodGroup(string)
 	CalculateAssignedPods(string, string) int
-	ActivateSiblings(pod *corev1.Pod, state *framework.CycleState)
 }
 
 // PodGroupManager defines the scheduling operation called
@@ -106,57 +93,23 @@ func NewPodGroupManager(pgClient pgclientset.Interface, snapshotSharedLister fra
 	return pgMgr
 }
 
-// ActivateSiblings stashes the pods belonging to the same PodGroup of the given pod
-// in the given state, with a reserved key "kubernetes.io/pods-to-activate".
-func (pgMgr *PodGroupManager) ActivateSiblings(pod *corev1.Pod, state *framework.CycleState) {
-	pgName := util.GetPodGroupLabel(pod)
-	if pgName == "" {
-		return
-	}
-
-	pods, err := pgMgr.podLister.Pods(pod.Namespace).List(
-		labels.SelectorFromSet(labels.Set{v1alpha1.PodGroupLabel: pgName}),
-	)
-	if err != nil {
-		klog.ErrorS(err, "Failed to obtain pods belong to a PodGroup", "podGroup", pgName)
-		return
-	}
-	for i := range pods {
-		if pods[i].UID == pod.UID {
-			pods = append(pods[:i], pods[i+1:]...)
-			break
-		}
-	}
-
-	if len(pods) != 0 {
-		if c, err := state.Read(framework.PodsToActivateKey); err == nil {
-			if s, ok := c.(*framework.PodsToActivate); ok {
-				s.Lock()
-				for _, pod := range pods {
-					namespacedName := GetNamespacedName(pod)
-					s.Map[namespacedName] = pod
-				}
-				s.Unlock()
-			}
-		}
-	}
-}
-
 // PreFilter filters out a pod if it
 // 1. belongs to a podgroup that was recently denied or
 // 2. the total number of pods in the podgroup is less than the minimum number of pods
 // that is required to be scheduled.
 func (pgMgr *PodGroupManager) PreFilter(ctx context.Context, pod *corev1.Pod) error {
-	klog.V(5).InfoS("Pre-filter", "pod", klog.KObj(pod))
+	klog.V(5).Infof("Pre-filter %v", pod.Name)
 	pgFullName, pg := pgMgr.GetPodGroup(pod)
 	if pg == nil {
 		return nil
 	}
 	if _, ok := pgMgr.lastDeniedPG.Get(pgFullName); ok {
-		return fmt.Errorf("pod with pgName: %v last failed in 3s, deny", pgFullName)
+		err := fmt.Errorf("pod with pgName: %v last failed in 3s, deny", pgFullName)
+		klog.V(6).Info(err)
+		return err
 	}
 	pods, err := pgMgr.podLister.Pods(pod.Namespace).List(
-		labels.SelectorFromSet(labels.Set{v1alpha1.PodGroupLabel: util.GetPodGroupLabel(pod)}),
+		labels.SelectorFromSet(labels.Set{util.PodGroupLabel: util.GetPodGroupLabel(pod)}),
 	)
 	if err != nil {
 		return fmt.Errorf("podLister list pods failed: %v", err)
@@ -187,7 +140,7 @@ func (pgMgr *PodGroupManager) PreFilter(ctx context.Context, pod *corev1.Pod) er
 	minResources[corev1.ResourcePods] = *podQuantity
 	err = CheckClusterResource(nodes, minResources, pgFullName)
 	if err != nil {
-		klog.ErrorS(err, "Failed to PreFilter", "podGroup", klog.KObj(pg))
+		klog.Errorf("PreFilter pod group %v error: %v", pgFullName, err)
 		pgMgr.AddDeniedPodGroup(pgFullName)
 		return err
 	}
@@ -196,23 +149,24 @@ func (pgMgr *PodGroupManager) PreFilter(ctx context.Context, pod *corev1.Pod) er
 }
 
 // Permit permits a pod to run, if the minMember match, it would send a signal to chan.
-func (pgMgr *PodGroupManager) Permit(ctx context.Context, pod *corev1.Pod) Status {
+func (pgMgr *PodGroupManager) Permit(ctx context.Context, pod *corev1.Pod, nodeName string) (bool, error) {
 	pgFullName, pg := pgMgr.GetPodGroup(pod)
 	if pgFullName == "" {
-		return PodGroupNotSpecified
+		return true, util.ErrorNotMatched
 	}
 	if pg == nil {
 		// A Pod with a podGroup name but without a PodGroup found is denied.
-		return PodGroupNotFound
+		return false, fmt.Errorf("PodGroup not found")
 	}
 
 	assigned := pgMgr.CalculateAssignedPods(pg.Name, pg.Namespace)
 	// The number of pods that have been assigned nodes is calculated from the snapshot.
 	// The current pod in not included in the snapshot during the current scheduling cycle.
-	if int32(assigned)+1 >= pg.Spec.MinMember {
-		return Success
+	ready := int32(assigned)+1 >= pg.Spec.MinMember
+	if ready {
+		return true, nil
 	}
-	return Wait
+	return false, util.ErrorWaiting
 }
 
 // PostBind updates a PodGroup's status.
@@ -237,16 +191,16 @@ func (pgMgr *PodGroupManager) PostBind(ctx context.Context, pod *corev1.Pod, nod
 	if pgCopy.Status.Phase != pg.Status.Phase {
 		pg, err := pgMgr.pgLister.PodGroups(pgCopy.Namespace).Get(pgCopy.Name)
 		if err != nil {
-			klog.ErrorS(err, "Failed to get PodGroup", "podGroup", klog.KObj(pgCopy))
+			klog.Error(err)
 			return
 		}
 		patch, err := util.CreateMergePatch(pg, pgCopy)
 		if err != nil {
-			klog.ErrorS(err, "Failed to create merge patch", "podGroup", klog.KObj(pg), "podGroup", klog.KObj(pgCopy))
+			klog.Error(err)
 			return
 		}
 		if err := pgMgr.PatchPodGroup(pg.Name, pg.Namespace, patch); err != nil {
-			klog.ErrorS(err, "Failed to patch", "podGroup", klog.KObj(pg))
+			klog.Error(err)
 			return
 		}
 		pg.Status.Phase = pgCopy.Status.Phase
@@ -273,7 +227,7 @@ func (pgMgr *PodGroupManager) AddDeniedPodGroup(pgFullName string) {
 	pgMgr.lastDeniedPG.Add(pgFullName, "", *pgMgr.lastDeniedPGExpirationTime)
 }
 
-// DeletePermittedPodGroup deletes a podGroup that pass Pre-Filter but reach PostFilter.
+// DeletePodGroup delete a podGroup that pass Pre-Filter but reach PostFilter.
 func (pgMgr *PodGroupManager) DeletePermittedPodGroup(pgFullName string) {
 	pgMgr.permittedPG.Delete(pgFullName)
 }
@@ -305,14 +259,14 @@ func (pgMgr *PodGroupManager) GetPodGroup(pod *corev1.Pod) (string, *v1alpha1.Po
 func (pgMgr *PodGroupManager) CalculateAssignedPods(podGroupName, namespace string) int {
 	nodeInfos, err := pgMgr.snapshotSharedLister.NodeInfos().List()
 	if err != nil {
-		klog.ErrorS(err, "Cannot get nodeInfos from frameworkHandle")
+		klog.Errorf("Cannot get nodeInfos from frameworkHandle: %v", err)
 		return 0
 	}
 	var count int
 	for _, nodeInfo := range nodeInfos {
 		for _, podInfo := range nodeInfo.Pods {
 			pod := podInfo.Pod
-			if pod.Labels[v1alpha1.PodGroupLabel] == podGroupName && pod.Namespace == namespace && pod.Spec.NodeName != "" {
+			if pod.Labels[util.PodGroupLabel] == podGroupName && pod.Namespace == namespace && pod.Spec.NodeName != "" {
 				count++
 			}
 		}
@@ -329,7 +283,7 @@ func CheckClusterResource(nodeList []*framework.NodeInfo, resourceRequest corev1
 			continue
 		}
 
-		nodeResource := util.ResourceList(getNodeResource(info, desiredPodGroupName))
+		nodeResource := getNodeResource(info, desiredPodGroupName).ResourceList()
 		for name, quant := range resourceRequest {
 			quant.Sub(nodeResource[name])
 			if quant.Sign() <= 0 {
@@ -381,6 +335,6 @@ func getNodeResource(info *framework.NodeInfo, desiredPodGroupName string) *fram
 			leftResource.ScalarResources[k] = allocatableEx - requestEx
 		}
 	}
-	klog.V(4).InfoS("Node left resource", "node", klog.KObj(info.Node()), "resource", leftResource)
+	klog.V(4).Infof("Node %v left resource %+v", info.Node().Name, leftResource)
 	return &leftResource
 }

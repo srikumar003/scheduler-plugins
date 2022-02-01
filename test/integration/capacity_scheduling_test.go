@@ -18,7 +18,7 @@ package integration
 
 import (
 	"context"
-	"io/ioutil"
+	"os"
 	"testing"
 	"time"
 
@@ -31,15 +31,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
-	apiservertesting "k8s.io/kubernetes/cmd/kube-apiserver/app/testing"
 	"k8s.io/kubernetes/pkg/scheduler"
 	schedapi "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	fwkruntime "k8s.io/kubernetes/pkg/scheduler/framework/runtime"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
-	testfwk "k8s.io/kubernetes/test/integration/framework"
 	testutil "k8s.io/kubernetes/test/integration/util"
-	"sigs.k8s.io/yaml"
 
+	schedconfig "sigs.k8s.io/scheduler-plugins/pkg/apis/config"
 	"sigs.k8s.io/scheduler-plugins/pkg/apis/scheduling"
 	"sigs.k8s.io/scheduler-plugins/pkg/apis/scheduling/v1alpha1"
 	"sigs.k8s.io/scheduler-plugins/pkg/capacityscheduling"
@@ -47,66 +45,101 @@ import (
 	"sigs.k8s.io/scheduler-plugins/test/util"
 )
 
-func TestCapacityScheduling(t *testing.T) {
-	t.Log("Creating API Server...")
-	// Start API Server with apiextensions supported.
-	server := apiservertesting.StartTestServerOrDie(
-		t, apiservertesting.NewDefaultTestServerOptions(),
-		[]string{"--disable-admission-plugins=ServiceAccount,TaintNodesByCondition,Priority", "--runtime-config=api/all=true"},
-		testfwk.SharedEtcd(),
-	)
-	testCtx := &testutil.TestContext{}
-	testCtx.Ctx, testCtx.CancelFn = context.WithCancel(context.Background())
-	testCtx.CloseFn = func() { server.TearDownFn() }
+const ResourceGPU v1.ResourceName = "nvidia.com/gpu"
 
-	t.Log("Creating CRD...")
-	apiExtensionClient := apiextensionsclient.NewForConfigOrDie(server.ClientConfig)
-	ctx := testCtx.Ctx
-	if _, err := apiExtensionClient.ApiextensionsV1().CustomResourceDefinitions().Create(testCtx.Ctx, makeElasticQuotaCRD(), metav1.CreateOptions{}); err != nil {
+func TestCapacityScheduling(t *testing.T) {
+	todo := context.TODO()
+	ctx, cancelFunc := context.WithCancel(todo)
+	testCtx := &testutil.TestContext{
+		Ctx:      ctx,
+		CancelFn: cancelFunc,
+		CloseFn:  func() {},
+	}
+
+	registry := fwkruntime.Registry{capacityscheduling.Name: capacityscheduling.New}
+	t.Log("create apiserver")
+	_, config := util.StartApi(t, todo.Done())
+
+	config.ContentType = "application/json"
+
+	apiExtensionClient, err := apiextensionsclient.NewForConfig(config)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	server.ClientConfig.ContentType = "application/json"
-	testCtx.KubeConfig = server.ClientConfig
-	cs := kubernetes.NewForConfigOrDie(testCtx.KubeConfig)
-	testCtx.ClientSet = cs
-	extClient := versioned.NewForConfigOrDie(testCtx.KubeConfig)
+	kubeConfigPath := util.BuildKubeConfigFile(config)
+	if len(kubeConfigPath) == 0 {
+		t.Fatal("Build KubeConfigFile failed")
+	}
+	defer os.RemoveAll(kubeConfigPath)
 
-	if err := wait.Poll(100*time.Millisecond, 3*time.Second, func() (done bool, err error) {
+	t.Log("create crd")
+	if _, err := apiExtensionClient.ApiextensionsV1().CustomResourceDefinitions().Create(ctx, makeElasticQuotaCRD(), metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	cs := kubernetes.NewForConfigOrDie(config)
+	extClient := versioned.NewForConfigOrDie(config)
+
+	if err = wait.Poll(100*time.Millisecond, 3*time.Second, func() (done bool, err error) {
 		groupList, _, err := cs.ServerGroupsAndResources()
 		if err != nil {
 			return false, nil
 		}
 		for _, group := range groupList {
 			if group.Name == scheduling.GroupName {
-				t.Log("The CRD is ready to serve")
 				return true, nil
 			}
 		}
+		t.Log("waiting for crd api ready")
 		return false, nil
 	}); err != nil {
-		t.Fatalf("Timed out waiting for CRD to be ready: %v", err)
+		t.Fatalf("Waiting for crd read time out: %v", err)
 	}
 
-	cfg, err := util.NewDefaultSchedulerComponentConfig()
-	if err != nil {
-		t.Fatal(err)
+	cfg := &schedconfig.CapacitySchedulingArgs{
+		KubeConfigPath: kubeConfigPath,
 	}
-	cfg.Profiles[0].Plugins.PreFilter.Enabled = append(cfg.Profiles[0].Plugins.PreFilter.Enabled, schedapi.Plugin{Name: capacityscheduling.Name})
-	cfg.Profiles[0].Plugins.PostFilter = schedapi.PluginSet{
-		Enabled:  []schedapi.Plugin{{Name: capacityscheduling.Name}},
-		Disabled: []schedapi.Plugin{{Name: "*"}},
-	}
-	cfg.Profiles[0].Plugins.Reserve.Enabled = append(cfg.Profiles[0].Plugins.Reserve.Enabled, schedapi.Plugin{Name: capacityscheduling.Name})
 
+	profile := schedapi.KubeSchedulerProfile{
+		SchedulerName: v1.DefaultSchedulerName,
+		Plugins: &schedapi.Plugins{
+			PreFilter: &schedapi.PluginSet{
+				Enabled: []schedapi.Plugin{
+					{Name: capacityscheduling.Name},
+				},
+			},
+			PostFilter: &schedapi.PluginSet{
+				Enabled: []schedapi.Plugin{
+					{Name: capacityscheduling.Name},
+				},
+				Disabled: []schedapi.Plugin{
+					{Name: "*"},
+				},
+			},
+			Reserve: &schedapi.PluginSet{
+				Enabled: []schedapi.Plugin{
+					{Name: capacityscheduling.Name},
+				},
+			},
+		},
+		PluginConfig: []schedapi.PluginConfig{
+			{
+				Name: capacityscheduling.Name,
+				Args: cfg,
+			},
+		},
+	}
+
+	testCtx.ClientSet = cs
 	testCtx = util.InitTestSchedulerWithOptions(
 		t,
 		testCtx,
 		true,
-		scheduler.WithProfiles(cfg.Profiles...),
-		scheduler.WithFrameworkOutOfTreeRegistry(fwkruntime.Registry{capacityscheduling.Name: capacityscheduling.New}),
+		scheduler.WithProfiles(profile),
+		scheduler.WithFrameworkOutOfTreeRegistry(registry),
 	)
-	t.Log("Init scheduler success")
+	t.Log("init scheduler success")
 	defer testutil.CleanupTest(t, testCtx)
 
 	for _, nodeName := range []string{"fake-node-1", "fake-node-2"} {
@@ -121,16 +154,24 @@ func TestCapacityScheduling(t *testing.T) {
 			v1.ResourceMemory: *resource.NewQuantity(100, resource.DecimalSI),
 			v1.ResourceCPU:    *resource.NewQuantity(100, resource.DecimalSI),
 		}
-		if _, err := testCtx.ClientSet.CoreV1().Nodes().Create(testCtx.Ctx, node, metav1.CreateOptions{}); err != nil {
+		node, err = cs.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
+		if err != nil {
 			t.Fatalf("Failed to create Node %q: %v", nodeName, err)
 		}
 	}
 
-	for _, ns := range []string{"ns1", "ns2", "ns3"} {
-		_, err := testCtx.ClientSet.CoreV1().Namespaces().Create(testCtx.Ctx, &v1.Namespace{
+	for _, ns := range []string{"ns1", "ns2"} {
+		_, err := cs.CoreV1().Namespaces().Create(ctx, &v1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{Name: ns}}, metav1.CreateOptions{})
 		if err != nil && !errors.IsAlreadyExists(err) {
-			t.Fatalf("Failed to create integration test ns: %v", err)
+			t.Fatalf("Failed to integration test ns: %v", err)
+		}
+		autoCreate := false
+		t.Logf("namespaces %+v", ns)
+		_, err = cs.CoreV1().ServiceAccounts(ns).Create(ctx, &v1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: ns}, AutomountServiceAccountToken: &autoCreate}, metav1.CreateOptions{})
+		if err != nil && !errors.IsAlreadyExists(err) {
+			t.Fatalf("Failed to create ns default: %v", err)
 		}
 	}
 
@@ -460,91 +501,7 @@ func TestCapacityScheduling(t *testing.T) {
 				},
 			},
 		},
-		{
-			name:       "cross-namespace preemption with three elasticquota",
-			namespaces: []string{"ns1", "ns2", "ns3"},
-			existPods: []*v1.Pod{
-				util.MakePod("t7-p1", "ns1", 0, 1, highPriority, "t7-p1", "fake-node-1"),
-				util.MakePod("t7-p2", "ns1", 0, 1, midPriority, "t7-p2", "fake-node-2"),
-				util.MakePod("t7-p3", "ns1", 0, 1, midPriority, "t7-p3", "fake-node-2"),
-				util.MakePod("t7-p5", "ns2", 0, 1, midPriority, "t7-p5", "fake-node-2"),
-				util.MakePod("t7-p6", "ns2", 0, 1, midPriority, "t7-p6", "fake-node-1"),
-				util.MakePod("t7-p7", "ns2", 0, 1, midPriority, "t7-p7", "fake-node-2"),
-			},
-			addPods: []*v1.Pod{
-				util.MakePod("t7-p9", "ns3", 0, 1, midPriority, "t7-p9", ""),
-				util.MakePod("t7-p10", "ns3", 0, 1, midPriority, "t7-p10", ""),
-				util.MakePod("t7-p11", "ns3", 0, 1, midPriority, "t7-p11", ""),
-				util.MakePod("t7-p12", "ns3", 0, 1, midPriority, "t7-p12", ""),
-			},
-			elasticQuotas: []*v1alpha1.ElasticQuota{
-				{
-					TypeMeta:   metav1.TypeMeta{Kind: "ElasticQuota", APIVersion: "scheduling.sigs.k8s.io/v1alpha1"},
-					ObjectMeta: metav1.ObjectMeta{Name: "eq1", Namespace: "ns1"},
-					Spec: v1alpha1.ElasticQuotaSpec{
-						Min: v1.ResourceList{
-							v1.ResourceMemory: *resource.NewQuantity(100, resource.DecimalSI),
-							v1.ResourceCPU:    *resource.NewMilliQuantity(1, resource.DecimalSI),
-						},
-						Max: v1.ResourceList{
-							v1.ResourceMemory: *resource.NewQuantity(200, resource.DecimalSI),
-							v1.ResourceCPU:    *resource.NewMilliQuantity(3, resource.DecimalSI),
-						},
-					},
-				},
-				{
-					TypeMeta:   metav1.TypeMeta{Kind: "ElasticQuota", APIVersion: "scheduling.sigs.k8s.io/v1alpha1"},
-					ObjectMeta: metav1.ObjectMeta{Name: "eq2", Namespace: "ns2"},
-					Spec: v1alpha1.ElasticQuotaSpec{
-						Min: v1.ResourceList{
-							v1.ResourceMemory: *resource.NewQuantity(100, resource.DecimalSI),
-							v1.ResourceCPU:    *resource.NewMilliQuantity(3, resource.DecimalSI),
-						},
-						Max: v1.ResourceList{
-							v1.ResourceMemory: *resource.NewQuantity(200, resource.DecimalSI),
-							v1.ResourceCPU:    *resource.NewMilliQuantity(3, resource.DecimalSI),
-						},
-					},
-				},
-				{
-					TypeMeta:   metav1.TypeMeta{Kind: "ElasticQuota", APIVersion: "scheduling.sigs.k8s.io/v1alpha1"},
-					ObjectMeta: metav1.ObjectMeta{Name: "eq3", Namespace: "ns3"},
-					Spec: v1alpha1.ElasticQuotaSpec{
-						Min: v1.ResourceList{
-							v1.ResourceMemory: *resource.NewQuantity(100, resource.DecimalSI),
-							v1.ResourceCPU:    *resource.NewMilliQuantity(3, resource.DecimalSI),
-						},
-						Max: v1.ResourceList{
-							v1.ResourceMemory: *resource.NewQuantity(200, resource.DecimalSI),
-							v1.ResourceCPU:    *resource.NewMilliQuantity(4, resource.DecimalSI),
-						},
-					},
-				},
-			},
-			expectedPods: []*v1.Pod{
-				{
-					ObjectMeta: metav1.ObjectMeta{Name: "t7-p1", Namespace: "ns1"},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{Name: "t7-p5", Namespace: "ns2"},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{Name: "t7-p6", Namespace: "ns2"},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{Name: "t7-p7", Namespace: "ns2"},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{Name: "t7-p9", Namespace: "ns3"},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{Name: "t7-p10", Namespace: "ns3"},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{Name: "t7-p11", Namespace: "ns3"},
-				},
-			},
-		}} {
+	} {
 		t.Run(tt.name, func(t *testing.T) {
 			defer cleanupElasticQuotas(ctx, extClient, tt.elasticQuotas)
 			defer testutil.CleanupPods(cs, t, tt.existPods)
@@ -561,18 +518,19 @@ func TestCapacityScheduling(t *testing.T) {
 				}
 			}
 
-			if err := wait.Poll(time.Millisecond*200, 10*time.Second, func() (bool, error) {
+			err = wait.Poll(time.Millisecond*200, 10*time.Second, func() (bool, error) {
 				for _, pod := range tt.existPods {
 					if !podScheduled(cs, pod.Namespace, pod.Name) {
 						return false, nil
 					}
 				}
 				return true, nil
-			}); err != nil {
+			})
+			if err != nil {
 				t.Fatalf("%v Waiting existPods created error: %v", tt.name, err.Error())
 			}
 
-			// Create Pods, we will expect them to be scheduled in a reversed order.
+			// Create Pods, We will expect them to be scheduled in a reversed order.
 			for _, pod := range tt.addPods {
 				_, err := cs.CoreV1().Pods(pod.Namespace).Create(testCtx.Ctx, pod, metav1.CreateOptions{})
 				if err != nil {
@@ -580,34 +538,106 @@ func TestCapacityScheduling(t *testing.T) {
 				}
 			}
 
-			if err := wait.Poll(time.Millisecond*200, 10*time.Second, func() (bool, error) {
+			err = wait.Poll(time.Millisecond*200, 10*time.Second, func() (bool, error) {
 				for _, v := range tt.expectedPods {
 					if !podScheduled(cs, v.Namespace, v.Name) {
 						return false, nil
 					}
 				}
 				return true, nil
-			}); err != nil {
+			})
+			if err != nil {
 				t.Fatalf("%v Waiting expectedPods error: %v", tt.name, err.Error())
 			}
-			t.Logf("Case %v finished", tt.name)
+			t.Logf("case %v finished", tt.name)
 		})
 	}
 }
 
 func makeElasticQuotaCRD() *apiextensionsv1.CustomResourceDefinition {
-	content, err := ioutil.ReadFile("../../manifests/capacityscheduling/crd.yaml")
-	if err != nil {
-		return &apiextensionsv1.CustomResourceDefinition{}
+	return &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "elasticquotas.scheduling.sigs.k8s.io",
+			Annotations: map[string]string{
+				"api-approved.kubernetes.io": "https://github.com/kubernetes-sigs/scheduler-plugins/pull/50",
+			},
+		},
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Group: scheduling.GroupName,
+			Names: apiextensionsv1.CustomResourceDefinitionNames{
+				Kind:       "ElasticQuota",
+				Plural:     "elasticquotas",
+				Singular:   "elasticquota",
+				ShortNames: []string{"eq", "eqs"},
+			},
+			Scope: apiextensionsv1.NamespaceScoped,
+			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{Name: "v1alpha1", Served: true, Storage: true,
+				Schema: &apiextensionsv1.CustomResourceValidation{
+					OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
+						Type: "object",
+						Properties: map[string]apiextensionsv1.JSONSchemaProps{
+							"spec": {
+								Type: "object",
+								Properties: map[string]apiextensionsv1.JSONSchemaProps{
+									"min": {
+										Type: "object",
+										AdditionalProperties: &apiextensionsv1.JSONSchemaPropsOrBool{
+											Schema: &apiextensionsv1.JSONSchemaProps{
+												AnyOf: []apiextensionsv1.JSONSchemaProps{
+													{
+														Type: "integer",
+													},
+													{
+														Type: "string",
+													},
+												},
+												XIntOrString: true,
+											},
+										},
+									},
+									"max": {
+										Type: "object",
+										AdditionalProperties: &apiextensionsv1.JSONSchemaPropsOrBool{
+											Schema: &apiextensionsv1.JSONSchemaProps{
+												AnyOf: []apiextensionsv1.JSONSchemaProps{
+													{
+														Type: "integer",
+													},
+													{
+														Type: "string",
+													},
+												},
+												XIntOrString: true,
+											},
+										},
+									},
+								},
+							},
+							"status": {
+								Type: "object",
+								Properties: map[string]apiextensionsv1.JSONSchemaProps{
+									"used": {
+										Type: "object",
+										AdditionalProperties: &apiextensionsv1.JSONSchemaPropsOrBool{
+											Schema: &apiextensionsv1.JSONSchemaProps{
+												AnyOf: []apiextensionsv1.JSONSchemaProps{
+													{
+														Type: "integer",
+													},
+													{
+														Type: "string",
+													},
+												},
+												XIntOrString: true,
+											},
+										}},
+								},
+							},
+						},
+					},
+				}}},
+		},
 	}
-
-	elasticquotasCRD := &apiextensionsv1.CustomResourceDefinition{}
-	err = yaml.Unmarshal(content, elasticquotasCRD)
-	if err != nil {
-		return &apiextensionsv1.CustomResourceDefinition{}
-	}
-
-	return elasticquotasCRD
 }
 
 func createElasticQuotas(ctx context.Context, client versioned.Interface, elasticQuotas []*v1alpha1.ElasticQuota) error {
@@ -624,7 +654,7 @@ func cleanupElasticQuotas(ctx context.Context, client versioned.Interface, elast
 	for _, eq := range elasticQuotas {
 		err := client.SchedulingV1alpha1().ElasticQuotas(eq.Namespace).Delete(ctx, eq.Name, metav1.DeleteOptions{})
 		if err != nil {
-			klog.ErrorS(err, "Failed to clean up ElasticQuota", "elasticQuota", klog.KObj(eq))
+			klog.Errorf("clean up ElasticQuota (%v/%v) error %s", eq.Namespace, eq.Name, err.Error())
 		}
 	}
 }

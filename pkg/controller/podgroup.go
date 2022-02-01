@@ -93,14 +93,14 @@ func NewPodGroupController(client kubernetes.Interface,
 func (ctrl *PodGroupController) Run(workers int, stopCh <-chan struct{}) {
 	defer ctrl.pgQueue.ShutDown()
 
-	klog.InfoS("Starting Pod Group controller")
-	defer klog.InfoS("Shutting Pod Group controller")
+	klog.Info("Starting Pod Group controller")
+	defer klog.Info("Shutting Pod Group controller")
 
 	if !cache.WaitForCacheSync(stopCh, ctrl.pgListerSynced, ctrl.podListerSynced) {
-		klog.ErrorS(nil, "Cannot sync caches")
+		klog.Error("Cannot sync caches")
 		return
 	}
-	klog.InfoS("Pod Group sync finished")
+	klog.Info("Pod Group sync finished")
 	for i := 0; i < workers; i++ {
 		go wait.Until(ctrl.worker, time.Second, stopCh)
 	}
@@ -124,7 +124,7 @@ func (ctrl *PodGroupController) pgAdded(obj interface{}) {
 		pg.Status.ScheduleStartTime.Sub(pg.CreationTimestamp.Time) > 48*time.Hour {
 		return
 	}
-	klog.InfoS("Enqueue podGroup ", "podGroup", key)
+	klog.Infof("Enqueue key %v", key)
 	ctrl.pgQueue.Add(key)
 }
 
@@ -142,10 +142,10 @@ func (ctrl *PodGroupController) podAdded(obj interface{}) {
 	}
 	pg, err := ctrl.pgLister.PodGroups(pod.Namespace).Get(pgName)
 	if err != nil {
-		klog.ErrorS(err, "Error while adding pod")
+		klog.Error(err)
 		return
 	}
-	klog.V(5).InfoS("Add pod group when pod gets added", "podGroup", klog.KObj(pg), "pod", klog.KObj(pod))
+	klog.V(5).Infof("Add pg %v when pod %v add", pg.Name, pod.Name)
 	ctrl.pgAdded(pg)
 }
 
@@ -175,7 +175,7 @@ func (ctrl *PodGroupController) processNextWorkItem() bool {
 	}
 	if err := ctrl.syncHandler(key); err != nil {
 		runtime.HandleError(err)
-		klog.ErrorS(err, "Error syncing pod group", "podGroup", key)
+		klog.Errorf("error syncing pod group %q: %s", key, err.Error())
 		return true
 	}
 	return true
@@ -197,19 +197,19 @@ func (ctrl *PodGroupController) syncHandler(key string) error {
 	}()
 	pg, err := ctrl.pgLister.PodGroups(namespace).Get(name)
 	if apierrs.IsNotFound(err) {
-		klog.V(5).InfoS("Pod group has been deleted", "podGroup", key)
+		klog.V(5).Infof("Pod group %q has been deleted ", key)
 		return nil
 	}
 	if err != nil {
-		klog.V(3).ErrorS(err, "Unable to retrieve pod group from store", "podGroup", key)
+		klog.V(3).Infof("Unable to retrieve pod group %q from store: %v", key, err)
 		return err
 	}
 
 	pgCopy := pg.DeepCopy()
-	selector := labels.Set(map[string]string{schedv1alpha1.PodGroupLabel: pgCopy.Name}).AsSelector()
+	selector := labels.Set(map[string]string{util.PodGroupLabel: pgCopy.Name}).AsSelector()
 	pods, err := ctrl.podLister.List(selector)
 	if err != nil {
-		klog.ErrorS(err, "List pods for group failed", "podGroup", klog.KObj(pgCopy))
+		klog.Errorf("List pods for group %v failed: %v", pgCopy.Name, err)
 		return err
 	}
 
@@ -242,11 +242,6 @@ func (ctrl *PodGroupController) syncHandler(key string) error {
 		pgCopy.Status.Failed = failed
 		pgCopy.Status.Succeeded = succeeded
 		pgCopy.Status.Running = running
-
-		if len(pods) == 0 {
-			pgCopy.Status.Phase = schedv1alpha1.PodGroupPending
-			break
-		}
 
 		if pgCopy.Status.Scheduled >= pgCopy.Spec.MinMember && pgCopy.Status.Phase == schedv1alpha1.PodGroupScheduling {
 			pgCopy.Status.Phase = schedv1alpha1.PodGroupScheduled

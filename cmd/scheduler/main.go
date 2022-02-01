@@ -25,17 +25,15 @@ import (
 	"k8s.io/kubernetes/cmd/kube-scheduler/app"
 
 	"sigs.k8s.io/scheduler-plugins/pkg/cacheaware"
-	"sigs.k8s.io/scheduler-plugins/pkg/capacityscheduling"
-	"sigs.k8s.io/scheduler-plugins/pkg/coscheduling"
-	"sigs.k8s.io/scheduler-plugins/pkg/crossnodepreemption"
-	"sigs.k8s.io/scheduler-plugins/pkg/noderesources"
-	"sigs.k8s.io/scheduler-plugins/pkg/noderesourcetopology"
-	"sigs.k8s.io/scheduler-plugins/pkg/podstate"
-	"sigs.k8s.io/scheduler-plugins/pkg/preemptiontoleration"
-	"sigs.k8s.io/scheduler-plugins/pkg/qos"
-	"sigs.k8s.io/scheduler-plugins/pkg/trimaran/loadvariationriskbalancing"
-	"sigs.k8s.io/scheduler-plugins/pkg/trimaran/targetloadpacking"
-
+	//"sigs.k8s.io/scheduler-plugins/pkg/capacityscheduling"
+	//"sigs.k8s.io/scheduler-plugins/pkg/coscheduling"
+	//"sigs.k8s.io/scheduler-plugins/pkg/crossnodepreemption"
+	//"sigs.k8s.io/scheduler-plugins/pkg/noderesources"
+	//"sigs.k8s.io/scheduler-plugins/pkg/noderesourcetopology"
+	//"sigs.k8s.io/scheduler-plugins/pkg/podstate"
+	//"sigs.k8s.io/scheduler-plugins/pkg/qos"
+	//"sigs.k8s.io/scheduler-plugins/pkg/trimaran/loadvariationriskbalancing"
+	//"sigs.k8s.io/scheduler-plugins/pkg/trimaran/targetloadpacking"
 	// Ensure scheme package is initialized.
 	_ "sigs.k8s.io/scheduler-plugins/pkg/apis/config/scheme"
 )
@@ -47,17 +45,16 @@ func main() {
 	// Later they can consist of scheduler profile(s) and hence
 	// used by various kinds of workloads.
 	command := app.NewSchedulerCommand(
-		app.WithPlugin(capacityscheduling.Name, capacityscheduling.New),
-		app.WithPlugin(coscheduling.Name, coscheduling.New),
-		app.WithPlugin(loadvariationriskbalancing.Name, loadvariationriskbalancing.New),
-		app.WithPlugin(noderesources.AllocatableName, noderesources.NewAllocatable),
-		app.WithPlugin(noderesourcetopology.Name, noderesourcetopology.New),
-		app.WithPlugin(preemptiontoleration.Name, preemptiontoleration.New),
-		app.WithPlugin(targetloadpacking.Name, targetloadpacking.New),
+		//app.WithPlugin(capacityscheduling.Name, capacityscheduling.New),
+		//app.WithPlugin(coscheduling.Name, coscheduling.New),
+		//app.WithPlugin(loadvariationriskbalancing.Name, loadvariationriskbalancing.New),
+		//app.WithPlugin(noderesources.AllocatableName, noderesources.NewAllocatable),
+		//app.WithPlugin(noderesourcetopology.Name, noderesourcetopology.New),
+		//app.WithPlugin(targetloadpacking.Name, targetloadpacking.New),
 		// Sample plugins below.
-		app.WithPlugin(crossnodepreemption.Name, crossnodepreemption.New),
-		app.WithPlugin(podstate.Name, podstate.New),
-		app.WithPlugin(qos.Name, qos.New),
+		//app.WithPlugin(crossnodepreemption.Name, crossnodepreemption.New),
+		//app.WithPlugin(podstate.Name, podstate.New),
+		//app.WithPlugin(qos.Name, qos.New),
 		app.WithPlugin(cacheaware.Name, cacheaware.NewCacheAwarePlugin),
 	)
 

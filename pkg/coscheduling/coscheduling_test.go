@@ -22,20 +22,19 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
 	clientsetfake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/defaultbinder"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/queuesort"
-	frameworkruntime "k8s.io/kubernetes/pkg/scheduler/framework/runtime"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
 
 	_ "sigs.k8s.io/scheduler-plugins/pkg/apis/config/scheme"
-	"sigs.k8s.io/scheduler-plugins/pkg/apis/scheduling/v1alpha1"
 	"sigs.k8s.io/scheduler-plugins/pkg/coscheduling/core"
 	fakepgclientset "sigs.k8s.io/scheduler-plugins/pkg/generated/clientset/versioned/fake"
 	pgformers "sigs.k8s.io/scheduler-plugins/pkg/generated/informers/externalversions"
+	pgutil "sigs.k8s.io/scheduler-plugins/pkg/util"
 	testutil "sigs.k8s.io/scheduler-plugins/test/util"
 )
 
@@ -101,31 +100,31 @@ func TestLess(t *testing.T) {
 		{
 			name: "p1.priority less than p2.priority",
 			p1: &framework.QueuedPodInfo{
-				PodInfo: framework.NewPodInfo(st.MakePod().Namespace(ns1).Name("pod1").Priority(lowPriority).Obj()),
+				Pod: st.MakePod().Namespace(ns1).Name("pod1").Priority(lowPriority).Obj(),
 			},
 			p2: &framework.QueuedPodInfo{
-				PodInfo: framework.NewPodInfo(st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Obj()),
+				Pod: st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Obj(),
 			},
 			expected: false, // p2 should be ahead of p1 in the queue
 		},
 		{
 			name: "p1.priority greater than p2.priority",
 			p1: &framework.QueuedPodInfo{
-				PodInfo: framework.NewPodInfo(st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Obj()),
+				Pod: st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Obj(),
 			},
 			p2: &framework.QueuedPodInfo{
-				PodInfo: framework.NewPodInfo(st.MakePod().Namespace(ns2).Name("pod2").Priority(lowPriority).Obj()),
+				Pod: st.MakePod().Namespace(ns2).Name("pod2").Priority(lowPriority).Obj(),
 			},
 			expected: true, // p1 should be ahead of p2 in the queue
 		},
 		{
 			name: "equal priority. p1 is added to schedulingQ earlier than p2",
 			p1: &framework.QueuedPodInfo{
-				PodInfo:                 framework.NewPodInfo(st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Obj()),
+				Pod:                     st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Obj(),
 				InitialAttemptTimestamp: times[0],
 			},
 			p2: &framework.QueuedPodInfo{
-				PodInfo:                 framework.NewPodInfo(st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Obj()),
+				Pod:                     st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Obj(),
 				InitialAttemptTimestamp: times[1],
 			},
 			expected: true, // p1 should be ahead of p2 in the queue
@@ -133,11 +132,11 @@ func TestLess(t *testing.T) {
 		{
 			name: "equal priority. p2 is added to schedulingQ earlier than p1",
 			p1: &framework.QueuedPodInfo{
-				PodInfo:                 framework.NewPodInfo(st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Obj()),
+				Pod:                     st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Obj(),
 				InitialAttemptTimestamp: times[1],
 			},
 			p2: &framework.QueuedPodInfo{
-				PodInfo:                 framework.NewPodInfo(st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Obj()),
+				Pod:                     st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Obj(),
 				InitialAttemptTimestamp: times[0],
 			},
 			expected: false, // p2 should be ahead of p1 in the queue
@@ -145,31 +144,31 @@ func TestLess(t *testing.T) {
 		{
 			name: "p1.priority less than p2.priority, p1 belongs to podGroup1",
 			p1: &framework.QueuedPodInfo{
-				PodInfo: framework.NewPodInfo(st.MakePod().Namespace(ns1).Name("pod1").Priority(lowPriority).Label(v1alpha1.PodGroupLabel, "pg1").Obj()),
+				Pod: st.MakePod().Namespace(ns1).Name("pod1").Priority(lowPriority).Label(pgutil.PodGroupLabel, "pg1").Obj(),
 			},
 			p2: &framework.QueuedPodInfo{
-				PodInfo: framework.NewPodInfo(st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Obj()),
+				Pod: st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Obj(),
 			},
 			expected: false, // p2 should be ahead of p1 in the queue
 		},
 		{
 			name: "p1.priority greater than p2.priority, p1 belongs to podGroup1",
 			p1: &framework.QueuedPodInfo{
-				PodInfo: framework.NewPodInfo(st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Label(v1alpha1.PodGroupLabel, "pg1").Obj()),
+				Pod: st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Label(pgutil.PodGroupLabel, "pg1").Obj(),
 			},
 			p2: &framework.QueuedPodInfo{
-				PodInfo: framework.NewPodInfo(st.MakePod().Namespace(ns2).Name("pod2").Priority(lowPriority).Obj()),
+				Pod: st.MakePod().Namespace(ns2).Name("pod2").Priority(lowPriority).Obj(),
 			},
 			expected: true, // p1 should be ahead of p2 in the queue
 		},
 		{
 			name: "equal priority. p1 is added to schedulingQ earlier than p2, p1 belongs to podGroup3",
 			p1: &framework.QueuedPodInfo{
-				PodInfo:                 framework.NewPodInfo(st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Label(v1alpha1.PodGroupLabel, "pg3").Obj()),
+				Pod:                     st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Label(pgutil.PodGroupLabel, "pg3").Obj(),
 				InitialAttemptTimestamp: times[0],
 			},
 			p2: &framework.QueuedPodInfo{
-				PodInfo:                 framework.NewPodInfo(st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Obj()),
+				Pod:                     st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Obj(),
 				InitialAttemptTimestamp: times[1],
 			},
 			expected: true, // p1 should be ahead of p2 in the queue
@@ -177,11 +176,11 @@ func TestLess(t *testing.T) {
 		{
 			name: "equal priority. p2 is added to schedulingQ earlier than p1, p1 belongs to podGroup3",
 			p1: &framework.QueuedPodInfo{
-				PodInfo:                 framework.NewPodInfo(st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Label(v1alpha1.PodGroupLabel, "pg3").Obj()),
+				Pod:                     st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Label(pgutil.PodGroupLabel, "pg3").Obj(),
 				InitialAttemptTimestamp: times[1],
 			},
 			p2: &framework.QueuedPodInfo{
-				PodInfo:                 framework.NewPodInfo(st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Obj()),
+				Pod:                     st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Obj(),
 				InitialAttemptTimestamp: times[0],
 			},
 			expected: false, // p2 should be ahead of p1 in the queue
@@ -190,31 +189,31 @@ func TestLess(t *testing.T) {
 		{
 			name: "p1.priority less than p2.priority, p1 belongs to podGroup1 and p2 belongs to podGroup2",
 			p1: &framework.QueuedPodInfo{
-				PodInfo: framework.NewPodInfo(st.MakePod().Namespace(ns1).Name("pod1").Priority(lowPriority).Label(v1alpha1.PodGroupLabel, "pg1").Obj()),
+				Pod: st.MakePod().Namespace(ns1).Name("pod1").Priority(lowPriority).Label(pgutil.PodGroupLabel, "pg1").Obj(),
 			},
 			p2: &framework.QueuedPodInfo{
-				PodInfo: framework.NewPodInfo(st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Label(v1alpha1.PodGroupLabel, "pg2").Obj()),
+				Pod: st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Label(pgutil.PodGroupLabel, "pg2").Obj(),
 			},
 			expected: false, // p2 should be ahead of p1 in the queue
 		},
 		{
 			name: "p1.priority greater than p2.priority, p1 belongs to podGroup1 and p2 belongs to podGroup2",
 			p1: &framework.QueuedPodInfo{
-				PodInfo: framework.NewPodInfo(st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Label(v1alpha1.PodGroupLabel, "pg1").Obj()),
+				Pod: st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Label(pgutil.PodGroupLabel, "pg1").Obj(),
 			},
 			p2: &framework.QueuedPodInfo{
-				PodInfo: framework.NewPodInfo(st.MakePod().Namespace(ns2).Name("pod2").Priority(lowPriority).Label(v1alpha1.PodGroupLabel, "pg2").Obj()),
+				Pod: st.MakePod().Namespace(ns2).Name("pod2").Priority(lowPriority).Label(pgutil.PodGroupLabel, "pg2").Obj(),
 			},
 			expected: true, // p1 should be ahead of p2 in the queue
 		},
 		{
 			name: "equal priority. p1 is added to schedulingQ earlier than p2, p1 belongs to podGroup1 and p2 belongs to podGroup2",
 			p1: &framework.QueuedPodInfo{
-				PodInfo:                 framework.NewPodInfo(st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Label(v1alpha1.PodGroupLabel, "pg1").Obj()),
+				Pod:                     st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Label(pgutil.PodGroupLabel, "pg1").Obj(),
 				InitialAttemptTimestamp: times[0],
 			},
 			p2: &framework.QueuedPodInfo{
-				PodInfo:                 framework.NewPodInfo(st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Label(v1alpha1.PodGroupLabel, "pg2").Obj()),
+				Pod:                     st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Label(pgutil.PodGroupLabel, "pg2").Obj(),
 				InitialAttemptTimestamp: times[1],
 			},
 			expected: true, // p1 should be ahead of p2 in the queue
@@ -222,11 +221,11 @@ func TestLess(t *testing.T) {
 		{
 			name: "equal priority. p2 is added to schedulingQ earlier than p1, p1 belongs to podGroup4 and p2 belongs to podGroup3",
 			p1: &framework.QueuedPodInfo{
-				PodInfo:                 framework.NewPodInfo(st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Label(v1alpha1.PodGroupLabel, "pg4").Obj()),
+				Pod:                     st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Label(pgutil.PodGroupLabel, "pg4").Obj(),
 				InitialAttemptTimestamp: times[1],
 			},
 			p2: &framework.QueuedPodInfo{
-				PodInfo:                 framework.NewPodInfo(st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Label(v1alpha1.PodGroupLabel, "pg3").Obj()),
+				Pod:                     st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Label(pgutil.PodGroupLabel, "pg3").Obj(),
 				InitialAttemptTimestamp: times[0],
 			},
 			expected: false, // p2 should be ahead of p1 in the queue
@@ -234,11 +233,11 @@ func TestLess(t *testing.T) {
 		{
 			name: "equal priority and creation time, p1 belongs to podGroup1 and p2 belongs to podGroup2",
 			p1: &framework.QueuedPodInfo{
-				PodInfo:                 framework.NewPodInfo(st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Label(v1alpha1.PodGroupLabel, "pg1").Obj()),
+				Pod:                     st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Label(pgutil.PodGroupLabel, "pg1").Obj(),
 				InitialAttemptTimestamp: times[0],
 			},
 			p2: &framework.QueuedPodInfo{
-				PodInfo:                 framework.NewPodInfo(st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Label(v1alpha1.PodGroupLabel, "pg2").Obj()),
+				Pod:                     st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Label(pgutil.PodGroupLabel, "pg2").Obj(),
 				InitialAttemptTimestamp: times[0],
 			},
 			expected: true, // p1 should be ahead of p2 in the queue
@@ -246,11 +245,11 @@ func TestLess(t *testing.T) {
 		{
 			name: "equal priority and creation time, p2 belong to podGroup2",
 			p1: &framework.QueuedPodInfo{
-				PodInfo:                 framework.NewPodInfo(st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Obj()),
+				Pod:                     st.MakePod().Namespace(ns1).Name("pod1").Priority(highPriority).Obj(),
 				InitialAttemptTimestamp: times[0],
 			},
 			p2: &framework.QueuedPodInfo{
-				PodInfo:                 framework.NewPodInfo(st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Label(v1alpha1.PodGroupLabel, "pg2").Obj()),
+				Pod:                     st.MakePod().Namespace(ns2).Name("pod2").Priority(highPriority).Label(pgutil.PodGroupLabel, "pg2").Obj(),
 				InitialAttemptTimestamp: times[0],
 			},
 			expected: true, // p1 should be ahead of p2 in the queue
@@ -279,12 +278,12 @@ func TestPermit(t *testing.T) {
 		},
 		{
 			name:     "pods belong to a podGroup, Wait",
-			pod:      st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Label(v1alpha1.PodGroupLabel, "pg1").Obj(),
+			pod:      st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Label(pgutil.PodGroupLabel, "pg1").Obj(),
 			expected: framework.Wait,
 		},
 		{
 			name:     "pods belong to a podGroup, Allow",
-			pod:      st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Label(v1alpha1.PodGroupLabel, "pg2").Obj(),
+			pod:      st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Label(pgutil.PodGroupLabel, "pg2").Obj(),
 			expected: framework.Success,
 		},
 	}
@@ -304,26 +303,12 @@ func TestPermit(t *testing.T) {
 	informerFactory.Start(ctx.Done())
 	existingPods, allNodes := testutil.MakeNodesAndPods(map[string]string{"test": "a"}, 60, 30)
 	snapshot := testutil.NewFakeSharedLister(existingPods, allNodes)
-	// Compose a framework handle.
-	registeredPlugins := []st.RegisterPluginFunc{
-		st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-		st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
-	}
-	f, err := st.NewFramework(registeredPlugins, "",
-		frameworkruntime.WithClientSet(fakeClient),
-		frameworkruntime.WithEventRecorder(&events.FakeRecorder{}),
-		frameworkruntime.WithInformerFactory(informerFactory),
-		frameworkruntime.WithSnapshotSharedLister(snapshot),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	scheudleDuration := 10 * time.Second
 	deniedPGExpirationTime := 3 * time.Second
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pgMgr := core.NewPodGroupManager(cs, snapshot, &scheudleDuration, &deniedPGExpirationTime, pgInformer, podInformer)
-			coscheduling := &Coscheduling{pgMgr: pgMgr, frameworkHandler: f, scheduleTimeout: &scheudleDuration}
+			coscheduling := &Coscheduling{pgMgr: pgMgr, frameworkHandler: fakeHandler{}, scheduleTimeout: &scheudleDuration}
 			code, _ := coscheduling.Permit(context.Background(), framework.NewCycleState(), tt.pod, "test")
 			if code.Code() != tt.expected {
 				t.Errorf("expected %v, got %v", tt.expected, code.Code())
@@ -348,22 +333,8 @@ func TestPostFilter(t *testing.T) {
 
 	existingPods, allNodes := testutil.MakeNodesAndPods(map[string]string{"test": "a"}, 60, 30)
 	snapshot := testutil.NewFakeSharedLister(existingPods, allNodes)
-	// Compose a framework handle.
-	registeredPlugins := []st.RegisterPluginFunc{
-		st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-		st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
-	}
-	f, err := st.NewFramework(registeredPlugins, "",
-		frameworkruntime.WithClientSet(fakeClient),
-		frameworkruntime.WithEventRecorder(&events.FakeRecorder{}),
-		frameworkruntime.WithInformerFactory(informerFactory),
-		frameworkruntime.WithSnapshotSharedLister(snapshot),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
 
-	existingPods, allNodes = testutil.MakeNodesAndPods(map[string]string{v1alpha1.PodGroupLabel: "pg"}, 10, 30)
+	existingPods, allNodes = testutil.MakeNodesAndPods(map[string]string{pgutil.PodGroupLabel: "pg"}, 10, 30)
 	for _, pod := range existingPods {
 		pod.Namespace = "ns1"
 	}
@@ -374,23 +345,34 @@ func TestPostFilter(t *testing.T) {
 		name                 string
 		pod                  *v1.Pod
 		expectedEmptyMsg     bool
+		preFilterSuccess     bool
 		snapshotSharedLister framework.SharedLister
 	}{
+		{
+			name:             "pod failed at pre-filter phase",
+			pod:              st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Obj(),
+			expectedEmptyMsg: true,
+			preFilterSuccess: false,
+		},
 		{
 			name:             "pod does not belong to any pod group",
 			pod:              st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Obj(),
 			expectedEmptyMsg: false,
+
+			preFilterSuccess: true,
 		},
 		{
 			name:                 "enough pods assigned, do not reject all",
-			pod:                  st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Label(v1alpha1.PodGroupLabel, "pg").Obj(),
+			pod:                  st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Label(pgutil.PodGroupLabel, "pg").Obj(),
 			expectedEmptyMsg:     true,
 			snapshotSharedLister: groupPodSnapshot,
+			preFilterSuccess:     true,
 		},
 		{
 			name:             "pod failed at filter phase, reject all pods",
-			pod:              st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Label(v1alpha1.PodGroupLabel, "pg").Obj(),
+			pod:              st.MakePod().Name("pod1").Namespace("ns1").UID("pod1").Label(pgutil.PodGroupLabel, "pg").Obj(),
 			expectedEmptyMsg: false,
+			preFilterSuccess: true,
 		},
 	}
 
@@ -403,11 +385,54 @@ func TestPostFilter(t *testing.T) {
 			}
 
 			pgMgr := core.NewPodGroupManager(cs, mgrSnapShot, &scheduleDuration, &deniedPGExpirationTime, pgInformer, podInformer)
-			coscheduling := &Coscheduling{pgMgr: pgMgr, frameworkHandler: f, scheduleTimeout: &scheduleDuration}
+			coscheduling := &Coscheduling{pgMgr: pgMgr, frameworkHandler: fakeHandler{}, scheduleTimeout: &scheduleDuration}
+			if !tt.preFilterSuccess {
+				cycleState.Write(coscheduling.getStateKey(), NewNoopStateData())
+			}
 			_, code := coscheduling.PostFilter(context.Background(), cycleState, tt.pod, nodeStatusMap)
 			if code.Message() == "" != tt.expectedEmptyMsg {
 				t.Errorf("expectedEmptyMsg %v, got %v", tt.expectedEmptyMsg, code.Message() == "")
 			}
+			if _, err := cycleState.Read(coscheduling.getStateKey()); err == nil {
+				t.Errorf("stateData leaking")
+			}
 		})
 	}
+}
+
+type fakeHandler struct {
+}
+
+var _ framework.Handle = &fakeHandler{}
+
+func (f fakeHandler) SnapshotSharedLister() framework.SharedLister {
+	return nil
+}
+
+func (f fakeHandler) IterateOverWaitingPods(callback func(framework.WaitingPod)) {
+	return
+}
+
+func (f fakeHandler) GetWaitingPod(uid types.UID) framework.WaitingPod {
+	return nil
+}
+
+func (f fakeHandler) RejectWaitingPod(uid types.UID) {
+	return
+}
+
+func (f fakeHandler) ClientSet() kubernetes.Interface {
+	return nil
+}
+
+func (f fakeHandler) EventRecorder() events.EventRecorder {
+	return nil
+}
+
+func (f fakeHandler) SharedInformerFactory() informers.SharedInformerFactory {
+	return nil
+}
+
+func (f fakeHandler) PreemptHandle() framework.PreemptHandle {
+	return nil
 }

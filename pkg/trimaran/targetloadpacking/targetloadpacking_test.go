@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -28,7 +29,6 @@ import (
 
 	"github.com/paypal/load-watcher/pkg/watcher"
 	"github.com/stretchr/testify/assert"
-	testutil "sigs.k8s.io/scheduler-plugins/test/util"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -44,7 +44,7 @@ import (
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
 
 	pluginConfig "sigs.k8s.io/scheduler-plugins/pkg/apis/config"
-	"sigs.k8s.io/scheduler-plugins/pkg/apis/config/v1beta2"
+	"sigs.k8s.io/scheduler-plugins/pkg/apis/config/v1beta1"
 )
 
 var _ framework.SharedLister = &testSharedLister{}
@@ -77,8 +77,8 @@ func (f *testSharedLister) Get(nodeName string) (*framework.NodeInfo, error) {
 
 func TestNew(t *testing.T) {
 	targetLoadPackingArgs := pluginConfig.TargetLoadPackingArgs{
-		TargetUtilization:         v1beta2.DefaultTargetUtilizationPercent,
-		DefaultRequestsMultiplier: v1beta2.DefaultRequestsMultiplier,
+		TargetUtilization:         v1beta1.DefaultTargetUtilizationPercent,
+		DefaultRequestsMultiplier: v1beta1.DefaultRequestsMultiplier,
 		WatcherAddress:            "http://deadbeef:2020",
 	}
 	targetLoadPackingConfig := config.PluginConfig{
@@ -94,8 +94,7 @@ func TestNew(t *testing.T) {
 	cs := testClientSet.NewSimpleClientset()
 	informerFactory := informers.NewSharedInformerFactory(cs, 0)
 	snapshot := newTestSharedLister(nil, nil)
-	fh, err := testutil.NewFramework(registeredPlugins, []config.PluginConfig{targetLoadPackingConfig},
-		"kube-scheduler", runtime.WithClientSet(cs),
+	fh, err := NewFramework(registeredPlugins, []config.PluginConfig{targetLoadPackingConfig}, runtime.WithClientSet(cs),
 		runtime.WithInformerFactory(informerFactory), runtime.WithSnapshotSharedLister(snapshot))
 	assert.Nil(t, err)
 	p, err := New(&targetLoadPackingArgs, fh)
@@ -112,8 +111,8 @@ func TestTargetLoadPackingScoring(t *testing.T) {
 	}
 
 	targetLoadPackingArgs := pluginConfig.TargetLoadPackingArgs{
-		TargetUtilization:         v1beta2.DefaultTargetUtilizationPercent,
-		DefaultRequestsMultiplier: v1beta2.DefaultRequestsMultiplier,
+		TargetUtilization:         v1beta1.DefaultTargetUtilizationPercent,
+		DefaultRequestsMultiplier: v1beta1.DefaultRequestsMultiplier,
 		WatcherAddress:            "http://deadbeef:2020",
 	}
 	targetLoadPackingConfig := config.PluginConfig{
@@ -156,7 +155,7 @@ func TestTargetLoadPackingScoring(t *testing.T) {
 				},
 			},
 			expected: []framework.NodeScore{
-				{Name: "node-1", Score: v1beta2.DefaultTargetUtilizationPercent},
+				{Name: "node-1", Score: v1beta1.DefaultTargetUtilizationPercent},
 			},
 		},
 		{
@@ -174,7 +173,7 @@ func TestTargetLoadPackingScoring(t *testing.T) {
 							Metrics: []watcher.Metric{
 								{
 									Type:     watcher.CPU,
-									Value:    float64(v1beta2.DefaultTargetUtilizationPercent + 10),
+									Value:    float64(v1beta1.DefaultTargetUtilizationPercent + 10),
 									Operator: watcher.Latest,
 								},
 							},
@@ -241,14 +240,13 @@ func TestTargetLoadPackingScoring(t *testing.T) {
 			cs := testClientSet.NewSimpleClientset()
 			informerFactory := informers.NewSharedInformerFactory(cs, 0)
 			snapshot := newTestSharedLister(nil, nodes)
-			fh, err := testutil.NewFramework(registeredPlugins, []config.PluginConfig{targetLoadPackingConfig},
-				"default-scheduler", runtime.WithClientSet(cs),
+			fh, err := NewFramework(registeredPlugins, []config.PluginConfig{targetLoadPackingConfig}, runtime.WithClientSet(cs),
 				runtime.WithInformerFactory(informerFactory), runtime.WithSnapshotSharedLister(snapshot))
 			assert.Nil(t, err)
 			targetLoadPackingArgs := pluginConfig.TargetLoadPackingArgs{
-				TargetUtilization:         v1beta2.DefaultTargetUtilizationPercent,
+				TargetUtilization:         v1beta1.DefaultTargetUtilizationPercent,
 				WatcherAddress:            server.URL,
-				DefaultRequestsMultiplier: v1beta2.DefaultRequestsMultiplier,
+				DefaultRequestsMultiplier: v1beta1.DefaultRequestsMultiplier,
 			}
 			p, err := New(&targetLoadPackingArgs, fh)
 			scorePlugin := p.(framework.ScorePlugin)
@@ -328,7 +326,7 @@ func BenchmarkTargetLoadPackingPlugin(b *testing.B) {
 			server := httptest.NewServer(http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
 				bytes, err := json.Marshal(watcherResponse)
 				if err != nil {
-					klog.ErrorS(err, "Error marshalling watcher response")
+					klog.Fatalf("Error marshalling watcher response: %v", err)
 				}
 				resp.Write(bytes)
 			}))
@@ -336,7 +334,7 @@ func BenchmarkTargetLoadPackingPlugin(b *testing.B) {
 			bfbpArgs.WatcherAddress = server.URL
 			defer server.Close()
 
-			fh, err := st.NewFramework(registeredPlugins, "default-scheduler", runtime.WithClientSet(cs),
+			fh, err := st.NewFramework(registeredPlugins, runtime.WithClientSet(cs),
 				runtime.WithInformerFactory(informerFactory), runtime.WithSnapshotSharedLister(snapshot))
 			assert.Nil(b, err)
 			pl, err := New(&bfbpArgs, fh)
@@ -398,7 +396,10 @@ func newTestSharedLister(pods []*v1.Pod, nodes []*v1.Node) *testSharedLister {
 		if _, ok := nodeInfoMap[node.Name]; !ok {
 			nodeInfoMap[node.Name] = framework.NewNodeInfo()
 		}
-		nodeInfoMap[node.Name].SetNode(node)
+		err := nodeInfoMap[node.Name].SetNode(node)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	for _, v := range nodeInfoMap {
@@ -439,4 +440,14 @@ func getNodes(nodesNum int64) (nodes []*v1.Node) {
 		nodes = append(nodes, st.MakeNode().Name(fmt.Sprintf("node-%v", i)).Capacity(nodeResources).Obj())
 	}
 	return
+}
+
+func NewFramework(fns []st.RegisterPluginFunc, args []config.PluginConfig, opts ...runtime.Option) (framework.Framework, error) {
+	registry := runtime.Registry{}
+	plugins := &config.Plugins{}
+	var pluginConfigs []config.PluginConfig
+	for _, f := range fns {
+		f(&registry, plugins, pluginConfigs)
+	}
+	return runtime.NewFramework(registry, plugins, args, opts...)
 }

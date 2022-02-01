@@ -19,6 +19,7 @@ package loadvariationriskbalancing
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -39,8 +40,7 @@ import (
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
 
 	pluginConfig "sigs.k8s.io/scheduler-plugins/pkg/apis/config"
-	"sigs.k8s.io/scheduler-plugins/pkg/apis/config/v1beta2"
-	testutil "sigs.k8s.io/scheduler-plugins/test/util"
+	"sigs.k8s.io/scheduler-plugins/pkg/apis/config/v1beta1"
 )
 
 var _ framework.SharedLister = &testSharedLister{}
@@ -82,8 +82,8 @@ func TestNew(t *testing.T) {
 
 	loadVariationRiskBalancingArgs := pluginConfig.LoadVariationRiskBalancingArgs{
 		WatcherAddress:          server.URL,
-		SafeVarianceMargin:      v1beta2.DefaultSafeVarianceMargin,
-		SafeVarianceSensitivity: v1beta2.DefaultSafeVarianceSensitivity,
+		SafeVarianceMargin:      v1beta1.DefaultSafeVarianceMargin,
+		SafeVarianceSensitivity: v1beta1.DefaultSafeVarianceSensitivity,
 	}
 	loadVariationRiskBalancingConfig := config.PluginConfig{
 		Name: Name,
@@ -98,8 +98,7 @@ func TestNew(t *testing.T) {
 	cs := testClientSet.NewSimpleClientset()
 	informerFactory := informers.NewSharedInformerFactory(cs, 0)
 	snapshot := newTestSharedLister(nil, nil)
-	fh, err := testutil.NewFramework(registeredPlugins, []config.PluginConfig{loadVariationRiskBalancingConfig},
-		"default-scheduler", runtime.WithClientSet(cs),
+	fh, err := NewFramework(registeredPlugins, []config.PluginConfig{loadVariationRiskBalancingConfig}, runtime.WithClientSet(cs),
 		runtime.WithInformerFactory(informerFactory), runtime.WithSnapshotSharedLister(snapshot))
 	assert.Nil(t, err)
 	p, err := New(&loadVariationRiskBalancingArgs, fh)
@@ -335,8 +334,8 @@ func TestScore(t *testing.T) {
 
 			loadVariationRiskBalancingArgs := pluginConfig.LoadVariationRiskBalancingArgs{
 				WatcherAddress:          server.URL,
-				SafeVarianceMargin:      v1beta2.DefaultSafeVarianceMargin,
-				SafeVarianceSensitivity: v1beta2.DefaultSafeVarianceSensitivity,
+				SafeVarianceMargin:      v1beta1.DefaultSafeVarianceMargin,
+				SafeVarianceSensitivity: v1beta1.DefaultSafeVarianceSensitivity,
 			}
 			loadVariationRiskBalancingConfig := config.PluginConfig{
 				Name: Name,
@@ -347,8 +346,7 @@ func TestScore(t *testing.T) {
 			informerFactory := informers.NewSharedInformerFactory(cs, 0)
 			snapshot := newTestSharedLister(nil, nodes)
 
-			fh, err := testutil.NewFramework(registeredPlugins, []config.PluginConfig{loadVariationRiskBalancingConfig},
-				"default-scheduler", runtime.WithClientSet(cs),
+			fh, err := NewFramework(registeredPlugins, []config.PluginConfig{loadVariationRiskBalancingConfig}, runtime.WithClientSet(cs),
 				runtime.WithInformerFactory(informerFactory), runtime.WithSnapshotSharedLister(snapshot))
 			assert.Nil(t, err)
 			p, _ := New(&loadVariationRiskBalancingArgs, fh)
@@ -380,7 +378,10 @@ func newTestSharedLister(pods []*v1.Pod, nodes []*v1.Node) *testSharedLister {
 		if _, ok := nodeInfoMap[node.Name]; !ok {
 			nodeInfoMap[node.Name] = framework.NewNodeInfo()
 		}
-		nodeInfoMap[node.Name].SetNode(node)
+		err := nodeInfoMap[node.Name].SetNode(node)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	for _, v := range nodeInfoMap {
@@ -422,4 +423,14 @@ func getPodWithContainersAndOverhead(overhead int64, initCPUReq int64, initMemRe
 		newPod.Spec.Containers[i].Resources.Limits[v1.ResourceMemory] = *resource.NewQuantity(contMemReq[i], resource.DecimalSI)
 	}
 	return newPod.Obj()
+}
+
+func NewFramework(fns []st.RegisterPluginFunc, args []config.PluginConfig, opts ...runtime.Option) (framework.Framework, error) {
+	registry := runtime.Registry{}
+	plugins := &config.Plugins{}
+	var pluginConfigs []config.PluginConfig
+	for _, f := range fns {
+		f(&registry, plugins, pluginConfigs)
+	}
+	return runtime.NewFramework(registry, plugins, args, opts...)
 }

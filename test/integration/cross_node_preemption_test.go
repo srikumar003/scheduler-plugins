@@ -78,18 +78,23 @@ func TestCrossNodePreemptionPlugin(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg, err := util.NewDefaultSchedulerComponentConfig()
-			if err != nil {
-				t.Fatal(err)
+			registry := fwkruntime.Registry{crossnodepreemption.Name: crossnodepreemption.New}
+			profile := schedapi.KubeSchedulerProfile{
+				SchedulerName: v1.DefaultSchedulerName,
+				Plugins: &schedapi.Plugins{
+					PostFilter: &schedapi.PluginSet{
+						Enabled: []schedapi.Plugin{
+							{Name: crossnodepreemption.Name},
+						},
+					},
+				},
 			}
-			cfg.Profiles[0].Plugins.PostFilter.Enabled = append(cfg.Profiles[0].Plugins.PostFilter.Enabled, schedapi.Plugin{Name: crossnodepreemption.Name})
-
 			testCtx := util.InitTestSchedulerWithOptions(
 				t,
-				testutils.InitTestAPIServer(t, "sched-crossnodepreemption", nil),
+				testutils.InitTestMaster(t, "sched-crossnodepreemption", nil),
 				true,
-				scheduler.WithProfiles(cfg.Profiles...),
-				scheduler.WithFrameworkOutOfTreeRegistry(fwkruntime.Registry{crossnodepreemption.Name: crossnodepreemption.New}),
+				scheduler.WithProfiles(profile),
+				scheduler.WithFrameworkOutOfTreeRegistry(registry),
 			)
 			defer testutils.CleanupTest(t, testCtx)
 

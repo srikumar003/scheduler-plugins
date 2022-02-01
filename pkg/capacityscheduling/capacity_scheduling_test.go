@@ -21,11 +21,10 @@ import (
 	"sort"
 	"testing"
 
-	gocmp "github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp"
 
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/informers"
 	clientsetfake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/events"
@@ -33,7 +32,6 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/defaultbinder"
 	dp "k8s.io/kubernetes/pkg/scheduler/framework/plugins/defaultpreemption"
-	plfeature "k8s.io/kubernetes/pkg/scheduler/framework/plugins/feature"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/noderesources"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/queuesort"
 	frameworkruntime "k8s.io/kubernetes/pkg/scheduler/framework/runtime"
@@ -125,26 +123,8 @@ func TestPreFilter(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var registerPlugins []st.RegisterPluginFunc
-			registeredPlugins := append(
-				registerPlugins,
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
-			)
-
-			fwk, err := st.NewFramework(
-				registeredPlugins, "",
-				frameworkruntime.WithPodNominator(testutil.NewPodNominator()),
-				frameworkruntime.WithSnapshotSharedLister(testutil.NewFakeSharedLister(make([]*v1.Pod, 0), make([]*v1.Node, 0))),
-			)
-
-			if err != nil {
-				t.Fatal(err)
-			}
-
 			cs := &CapacityScheduling{
 				elasticQuotaInfos: tt.elasticQuotas,
-				fh:                fwk,
 			}
 
 			pods := make([]*v1.Pod, 0)
@@ -285,15 +265,12 @@ func TestFindCandidates(t *testing.T) {
 			registeredPlugins := []st.RegisterPluginFunc{
 				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
 				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
-				st.RegisterPluginAsExtensions(noderesources.FitName, func(plArgs apiruntime.Object, fh framework.Handle) (framework.Plugin, error) {
-					return noderesources.NewFit(plArgs, fh, plfeature.Features{})
-				}, "Filter", "PreFilter"),
+				st.RegisterPluginAsExtensions(noderesources.FitName, noderesources.NewFit, "Filter", "PreFilter"),
 			}
 
 			cs := clientsetfake.NewSimpleClientset()
 			fwk, err := st.NewFramework(
 				registeredPlugins,
-				"default-scheduler",
 				frameworkruntime.WithClientSet(cs),
 				frameworkruntime.WithEventRecorder(&events.FakeRecorder{}),
 				frameworkruntime.WithPodNominator(testutil.NewPodNominator()),
@@ -313,27 +290,16 @@ func TestFindCandidates(t *testing.T) {
 				t.Errorf("Unexpected preFilterStatus: %v", preFilterStatus)
 			}
 
-			podReq := computePodResourceRequest(tt.pod)
+			prefilterStatue := computePodResourceRequest(tt.pod)
 			elasticQuotaSnapshotState := &ElasticQuotaSnapshotState{
 				elasticQuotaInfos: tt.elasticQuotas,
-			}
-			prefilterStatue := &PreFilterState{
-				podReq:                         *podReq,
-				nominatedPodsReqWithPodReq:     *podReq,
-				nominatedPodsReqInEQWithPodReq: *podReq,
 			}
 			state.Write(preFilterStateKey, prefilterStatue)
 			state.Write(ElasticQuotaSnapshotKey, elasticQuotaSnapshotState)
 
-			c := CapacityScheduling{
-				fh:        fwk,
-				podLister: fwk.SharedInformerFactory().Core().V1().Pods().Lister(),
-				pdbLister: getPDBLister(fwk.SharedInformerFactory()),
-			}
-
-			got, status := c.FindCandidates(ctx, cs, state, tt.pod, tt.nodesStatuses)
-			if !status.IsSuccess() {
-				t.Fatalf("unexpected error during FindCandidates(): %v", status)
+			got, err := FindCandidates(ctx, cs, state, tt.pod, tt.nodesStatuses, fwk.PreemptHandle(), fwk.SnapshotSharedLister().NodeInfos(), getPDBLister(fwk.SharedInformerFactory()))
+			if err != nil {
+				t.Fatal(err)
 			}
 
 			// Sort the values (inner victims) and the candidate itself (by its NominatedNodeName).
@@ -346,7 +312,7 @@ func TestFindCandidates(t *testing.T) {
 			sort.Slice(got, func(i, j int) bool {
 				return got[i].Name() < got[j].Name()
 			})
-			if diff := gocmp.Diff(tt.want, got, gocmp.AllowUnexported(candidate{})); diff != "" {
+			if diff := cmp.Diff(tt.want, got, cmp.AllowUnexported(candidate{})); diff != "" {
 				t.Errorf("Unexpected candidates (-want, +got): %s", diff)
 			}
 		})

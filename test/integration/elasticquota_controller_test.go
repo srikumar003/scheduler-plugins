@@ -18,62 +18,70 @@ package integration
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
-	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	quota "k8s.io/apiserver/pkg/quota/v1"
-	apiserver "k8s.io/apiserver/pkg/server"
+	"k8s.io/apiserver/pkg/server"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/klog/v2"
-	apiservertesting "k8s.io/kubernetes/cmd/kube-apiserver/app/testing"
 	"k8s.io/kubernetes/pkg/scheduler"
 	fwkruntime "k8s.io/kubernetes/pkg/scheduler/framework/runtime"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
-	testfwk "k8s.io/kubernetes/test/integration/framework"
 	testutil "k8s.io/kubernetes/test/integration/util"
+
+	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"sigs.k8s.io/scheduler-plugins/pkg/apis/scheduling"
 	"sigs.k8s.io/scheduler-plugins/pkg/apis/scheduling/v1alpha1"
 	schedv1alpha1 "sigs.k8s.io/scheduler-plugins/pkg/apis/scheduling/v1alpha1"
-	"sigs.k8s.io/scheduler-plugins/pkg/capacityscheduling"
 	"sigs.k8s.io/scheduler-plugins/pkg/controller"
-	"sigs.k8s.io/scheduler-plugins/pkg/generated/clientset/versioned"
+	"sigs.k8s.io/scheduler-plugins/pkg/coscheduling"
+	schedclientset "sigs.k8s.io/scheduler-plugins/pkg/generated/clientset/versioned"
 	schedformers "sigs.k8s.io/scheduler-plugins/pkg/generated/informers/externalversions"
 	"sigs.k8s.io/scheduler-plugins/test/util"
 )
 
 func TestElasticController(t *testing.T) {
-	t.Log("Creating API Server...")
-	// Start API Server with apiextensions supported.
-	server := apiservertesting.StartTestServerOrDie(
-		t, apiservertesting.NewDefaultTestServerOptions(),
-		[]string{"--disable-admission-plugins=ServiceAccount,TaintNodesByCondition,Priority", "--runtime-config=api/all=true"},
-		testfwk.SharedEtcd(),
-	)
-	testCtx := &testutil.TestContext{}
-	testCtx.Ctx, testCtx.CancelFn = context.WithCancel(context.Background())
-	testCtx.CloseFn = func() { server.TearDownFn() }
+	todo := context.TODO()
+	ctx, cancelFunc := context.WithCancel(todo)
+	testCtx := &testutil.TestContext{
+		Ctx:      ctx,
+		CancelFn: cancelFunc,
+		CloseFn:  func() {},
+	}
+	registry := fwkruntime.Registry{coscheduling.Name: coscheduling.New}
+	t.Log("create apiserver")
+	_, config := util.StartApi(t, todo.Done())
 
-	t.Log("Creating CRD...")
-	apiExtensionClient := apiextensionsclient.NewForConfigOrDie(server.ClientConfig)
-	ctx := testCtx.Ctx
-	if _, err := apiExtensionClient.ApiextensionsV1().CustomResourceDefinitions().Create(testCtx.Ctx, makeElasticQuotaCRD(), metav1.CreateOptions{}); err != nil {
+	config.ContentType = "application/json"
+
+	apiExtensionClient, err := apiextensionsclient.NewForConfig(config)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	server.ClientConfig.ContentType = "application/json"
-	testCtx.KubeConfig = server.ClientConfig
-	cs := kubernetes.NewForConfigOrDie(testCtx.KubeConfig)
-	testCtx.ClientSet = cs
-	extClient := versioned.NewForConfigOrDie(testCtx.KubeConfig)
+	kubeConfigPath := util.BuildKubeConfigFile(config)
+	if len(kubeConfigPath) == 0 {
+		t.Fatal("Build KubeConfigFile failed")
+	}
+	defer os.RemoveAll(kubeConfigPath)
+
+	t.Log("create crd")
+	if _, err := apiExtensionClient.ApiextensionsV1().CustomResourceDefinitions().Create(ctx, makeElasticQuotaCRD(), metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	cs := kubernetes.NewForConfigOrDie(config)
+	extClient := schedclientset.NewForConfigOrDie(config)
 	schedInformerFactory := schedformers.NewSharedInformerFactory(extClient, 0)
 	eqInformer := schedInformerFactory.Scheduling().V1alpha1().ElasticQuotas()
 
@@ -81,25 +89,24 @@ func TestElasticController(t *testing.T) {
 	podInformer := coreInformerFactory.Core().V1().Pods()
 	eqCtrl := controller.NewElasticQuotaController(cs, eqInformer, podInformer, extClient)
 	runtime.Must(schedv1alpha1.AddToScheme(scheme.Scheme))
-
-	if err := wait.Poll(100*time.Millisecond, 3*time.Second, func() (done bool, err error) {
+	if err = wait.Poll(100*time.Millisecond, 3*time.Second, func() (done bool, err error) {
 		groupList, _, err := cs.ServerGroupsAndResources()
 		if err != nil {
 			return false, nil
 		}
 		for _, group := range groupList {
 			if group.Name == scheduling.GroupName {
-				t.Log("The CRD is ready to serve")
 				return true, nil
 			}
 		}
+		t.Log("waiting for crd api ready")
 		return false, nil
 	}); err != nil {
-		t.Fatalf("Timed out waiting for CRD to be ready: %v", err)
+		t.Fatalf("Waiting for crd read time out: %v", err)
 	}
 
-	// Start controller
-	stopCh := apiserver.SetupSignalHandler()
+	// start controller
+	stopCh := server.SetupSignalHandler()
 	go eqCtrl.Run(1, ctx.Done())
 	schedInformerFactory.Start(stopCh)
 	coreInformerFactory.Start(stopCh)
@@ -109,9 +116,9 @@ func TestElasticController(t *testing.T) {
 		t,
 		testCtx,
 		true,
-		scheduler.WithFrameworkOutOfTreeRegistry(fwkruntime.Registry{capacityscheduling.Name: capacityscheduling.New}),
+		scheduler.WithFrameworkOutOfTreeRegistry(registry),
 	)
-	t.Log("Init scheduler success")
+	t.Log("init scheduler success")
 	defer testutil.CleanupTest(t, testCtx)
 
 	// Create a Node.
@@ -127,7 +134,8 @@ func TestElasticController(t *testing.T) {
 		v1.ResourceCPU:    *resource.NewQuantity(300, resource.DecimalSI),
 		v1.ResourceMemory: *resource.NewQuantity(3000, resource.DecimalSI),
 	}
-	if _, err := cs.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{}); err != nil {
+	node, err = cs.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
+	if err != nil {
 		t.Fatalf("Failed to create Node %q: %v", nodeName, err)
 	}
 
@@ -135,7 +143,14 @@ func TestElasticController(t *testing.T) {
 		_, err := cs.CoreV1().Namespaces().Create(ctx, &v1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{Name: ns}}, metav1.CreateOptions{})
 		if err != nil && !errors.IsAlreadyExists(err) {
-			t.Fatalf("Failed to create integration test ns: %v", err)
+			t.Fatalf("Failed to integration test ns: %v", err)
+		}
+		autoCreate := false
+		t.Logf("namespaces %+v", ns)
+		_, err = cs.CoreV1().ServiceAccounts(ns).Create(ctx, &v1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: ns}, AutomountServiceAccountToken: &autoCreate}, metav1.CreateOptions{})
+		if err != nil && !errors.IsAlreadyExists(err) {
+			t.Fatalf("Failed to create ns default: %v", err)
 		}
 	}
 
@@ -275,23 +290,24 @@ func TestElasticController(t *testing.T) {
 					}
 				}
 			}
-			if err := wait.Poll(time.Millisecond*200, 10*time.Second, func() (bool, error) {
+			err = wait.Poll(time.Millisecond*200, 10*time.Second, func() (bool, error) {
 				for _, pod := range tt.incomingPods {
 					if !podScheduled(cs, pod.Namespace, pod.Name) {
 						return false, nil
 					}
 				}
 				return true, nil
-			}); err != nil {
+			})
+			if err != nil {
 				t.Fatalf("%v Waiting existPods created error: %v", tt.name, err.Error())
 			}
 
-			if err := wait.Poll(time.Millisecond*200, 10*time.Second, func() (bool, error) {
+			err = wait.Poll(time.Millisecond*200, 10*time.Second, func() (bool, error) {
 				for _, v := range tt.used {
 					eq, err := extClient.SchedulingV1alpha1().ElasticQuotas(v.Namespace).Get(context.TODO(), v.Name, metav1.GetOptions{})
 					if err != nil {
 						// This could be a connection error so we want to retry.
-						klog.ErrorS(err, "Failed to obtain the elasticQuota clientSet")
+						klog.Errorf("klog error %v", err)
 						return false, err
 					}
 					if !quota.Equals(eq.Status.Used, v.Status.Used) {
@@ -299,33 +315,36 @@ func TestElasticController(t *testing.T) {
 					}
 				}
 				return true, nil
-			}); err != nil {
+			})
+			if err != nil {
 				t.Fatalf("%v Waiting nowEQUsed error: %v", tt.name, err.Error())
 			}
 
 			// update Pods status to check if EQ.used has changed as expected
 			for _, pod := range tt.incomingPods {
-				if _, err := cs.CoreV1().Pods(pod.Namespace).UpdateStatus(testCtx.Ctx, pod, metav1.UpdateOptions{}); err != nil {
+				_, err = cs.CoreV1().Pods(pod.Namespace).UpdateStatus(testCtx.Ctx, pod, metav1.UpdateOptions{})
+				if err != nil {
 					t.Fatalf("Failed to update Pod status %q: %v", pod.Name, err)
 				}
 			}
-			if err := wait.Poll(time.Millisecond*200, 10*time.Second, func() (bool, error) {
+			err = wait.Poll(time.Millisecond*200, 10*time.Second, func() (bool, error) {
 				for _, pod := range tt.incomingPods {
 					if !podScheduled(cs, pod.Namespace, pod.Name) {
 						return false, nil
 					}
 				}
 				return true, nil
-			}); err != nil {
+			})
+			if err != nil {
 				t.Fatalf("%v Waiting nextPods update status error: %v", tt.name, err.Error())
 			}
 
-			if err := wait.Poll(time.Millisecond*200, 10*time.Second, func() (bool, error) {
+			err = wait.Poll(time.Millisecond*200, 10*time.Second, func() (bool, error) {
 				for _, v := range tt.want {
 					eq, err := extClient.SchedulingV1alpha1().ElasticQuotas(v.Namespace).Get(context.TODO(), v.Name, metav1.GetOptions{})
 					if err != nil {
 						// This could be a connection error so we want to retry.
-						klog.ErrorS(err, "Failed to obtain the elasticQuota clientSet")
+						klog.Errorf("klog error %v", err)
 						return false, err
 					}
 					if !quota.Equals(eq.Status.Used, v.Status.Used) {
@@ -333,10 +352,11 @@ func TestElasticController(t *testing.T) {
 					}
 				}
 				return true, nil
-			}); err != nil {
+			})
+			if err != nil {
 				t.Fatalf("%v Waiting nextEQUsed error: %v", tt.name, err.Error())
 			}
-			t.Logf("Case %v finished", tt.name)
+			t.Logf("case %v finished", tt.name)
 		})
 	}
 }

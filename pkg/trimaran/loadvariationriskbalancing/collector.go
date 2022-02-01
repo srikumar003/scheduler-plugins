@@ -17,7 +17,6 @@ limitations under the License.
 package loadvariationriskbalancing
 
 import (
-	"fmt"
 	"sync"
 	"time"
 
@@ -28,6 +27,7 @@ import (
 	"k8s.io/klog/v2"
 
 	pluginConfig "sigs.k8s.io/scheduler-plugins/pkg/apis/config"
+	"sigs.k8s.io/scheduler-plugins/pkg/apis/config/v1beta1"
 )
 
 const (
@@ -56,11 +56,12 @@ type Collector struct {
 // newCollector : create an instance of a data collector
 func newCollector(obj runtime.Object) (*Collector, error) {
 	// get the plugin arguments
-	args, err := getArgs(obj)
-	if err != nil {
-		return nil, err
-	}
-	klog.V(4).InfoS("Using LoadVariationRiskBalancingArgs", "type", args.MetricProvider.Type, "address", args.MetricProvider.Address, "margin", args.SafeVarianceMargin, "sensitivity", args.SafeVarianceSensitivity, "watcher", args.WatcherAddress)
+	args := getArgs(obj)
+
+	klog.V(4).Infof("Using LoadVariationRiskBalancingArgs: MetricProvider.Type=%q, MetricProvider.Address=%q,"+
+		" SafeVarianceMargin=%f, SafeVarianceSensitivity=%f, WatcherAddress=%q",
+		args.MetricProvider.Type, args.MetricProvider.Address, args.SafeVarianceMargin,
+		args.SafeVarianceSensitivity, args.WatcherAddress)
 
 	var client loadwatcherapi.Client
 	if args.WatcherAddress != "" {
@@ -80,9 +81,9 @@ func newCollector(obj runtime.Object) (*Collector, error) {
 	}
 
 	// populate metrics before returning
-	err = collector.updateMetrics()
+	err := collector.updateMetrics()
 	if err != nil {
-		klog.ErrorS(err, "Unable to populate metrics initially")
+		klog.Warningf("unable to populate metrics initially: %v", err)
 	}
 	// start periodic updates
 	go func() {
@@ -90,7 +91,7 @@ func newCollector(obj runtime.Object) (*Collector, error) {
 		for range metricsUpdaterTicker.C {
 			err = collector.updateMetrics()
 			if err != nil {
-				klog.ErrorS(err, "Unable to update metrics")
+				klog.Warningf("unable to update metrics: %v", err)
 			}
 		}
 	}()
@@ -108,43 +109,37 @@ func (collector *Collector) getAllMetrics() *watcher.WatcherMetrics {
 // getNodeMetrics : get metrics for a node from watcher
 func (collector *Collector) getNodeMetrics(nodeName string) []watcher.Metric {
 	allMetrics := collector.getAllMetrics()
-	// This happens if metrics were never populated since scheduler started
-	if allMetrics.Data.NodeMetricsMap == nil {
-		klog.ErrorS(nil, "Metrics not available from watcher")
-		return nil
-	}
 	// Check if node is new (no metrics yet) or metrics are unavailable due to 404 or 500
 	if _, ok := allMetrics.Data.NodeMetricsMap[nodeName]; !ok {
-		klog.ErrorS(nil, "Unable to find metrics for node", "nodeName", nodeName)
+		klog.Errorf("unable to find metrics for node %v", nodeName)
 		return nil
 	}
 	return allMetrics.Data.NodeMetricsMap[nodeName].Metrics
 }
 
 // getArgs : get configured args
-func getArgs(obj runtime.Object) (*pluginConfig.LoadVariationRiskBalancingArgs, error) {
+func getArgs(obj runtime.Object) *pluginConfig.LoadVariationRiskBalancingArgs {
 	// cast object into plugin arguments object
 	args, ok := obj.(*pluginConfig.LoadVariationRiskBalancingArgs)
 	if !ok {
-		return nil, fmt.Errorf("want args to be of type LoadVariationRiskBalancingArgs, got %T", obj)
-	}
-	if args.WatcherAddress == "" {
-		metricProviderType := string(args.MetricProvider.Type)
-		validMetricProviderType := metricProviderType == string(pluginConfig.KubernetesMetricsServer) ||
-			metricProviderType == string(pluginConfig.Prometheus) ||
-			metricProviderType == string(pluginConfig.SignalFx)
-		if !validMetricProviderType {
-			return nil, fmt.Errorf("invalid MetricProvider.Type, got %T", args.MetricProvider.Type)
+		klog.Errorf("want args to be of type LoadVariationRiskBalancingArgs, got %T, using defaults", obj)
+		args = &pluginConfig.LoadVariationRiskBalancingArgs{
+			MetricProvider: pluginConfig.MetricProviderSpec{
+				Type: v1beta1.DefaultMetricProviderType,
+			},
+			SafeVarianceMargin:      v1beta1.DefaultSafeVarianceMargin,
+			SafeVarianceSensitivity: v1beta1.DefaultSafeVarianceSensitivity,
 		}
+		return args
 	}
-	return args, nil
+	return args
 }
 
 // updateMetrics : request to load watcher to update all metrics
 func (collector *Collector) updateMetrics() error {
 	metrics, err := collector.client.GetLatestWatcherMetrics()
 	if err != nil {
-		klog.ErrorS(err, "Load watcher client failed")
+		klog.Errorf("load watcher client failed: %v", err)
 		return err
 	}
 	collector.mu.Lock()

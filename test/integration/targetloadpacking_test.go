@@ -26,6 +26,7 @@ import (
 
 	"github.com/paypal/load-watcher/pkg/watcher"
 	"github.com/stretchr/testify/assert"
+
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,14 +37,15 @@ import (
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
 	testutils "k8s.io/kubernetes/test/integration/util"
 	imageutils "k8s.io/kubernetes/test/utils/image"
-	"sigs.k8s.io/scheduler-plugins/pkg/apis/config/v1beta2"
 
 	"sigs.k8s.io/scheduler-plugins/pkg/apis/config"
+	"sigs.k8s.io/scheduler-plugins/pkg/apis/config/v1beta1"
 	"sigs.k8s.io/scheduler-plugins/pkg/trimaran/targetloadpacking"
 	"sigs.k8s.io/scheduler-plugins/test/util"
 )
 
 func TestTargetNodePackingPlugin(t *testing.T) {
+	registry := fwkruntime.Registry{targetloadpacking.Name: targetloadpacking.New}
 	metrics := watcher.WatcherMetrics{
 		Window: watcher.Window{},
 		Data: watcher.Data{
@@ -83,35 +85,38 @@ func TestTargetNodePackingPlugin(t *testing.T) {
 		assert.Nil(t, err)
 		resp.Write(bytes)
 	}))
-	defer server.Close()
 
-	cfg, err := util.NewDefaultSchedulerComponentConfig()
-	if err != nil {
-		t.Fatal(err)
+	defer server.Close()
+	profile := schedapi.KubeSchedulerProfile{
+		SchedulerName: v1.DefaultSchedulerName,
+		Plugins: &schedapi.Plugins{
+			Score: &schedapi.PluginSet{
+				Enabled: []schedapi.Plugin{
+					{Name: targetloadpacking.Name},
+				},
+				Disabled: []schedapi.Plugin{
+					{Name: "*"},
+				},
+			},
+		},
+		PluginConfig: []schedapi.PluginConfig{
+			{
+				Name: targetloadpacking.Name,
+				Args: &config.TargetLoadPackingArgs{
+					WatcherAddress:            server.URL,
+					TargetUtilization:         v1beta1.DefaultTargetUtilizationPercent,
+					DefaultRequestsMultiplier: v1beta1.DefaultRequestsMultiplier,
+				},
+			},
+		},
 	}
-	cfg.Profiles[0].Plugins.Score = schedapi.PluginSet{
-		Enabled: []schedapi.Plugin{
-			{Name: targetloadpacking.Name},
-		},
-		Disabled: []schedapi.Plugin{
-			{Name: "*"},
-		},
-	}
-	cfg.Profiles[0].PluginConfig = append(cfg.Profiles[0].PluginConfig, schedapi.PluginConfig{
-		Name: targetloadpacking.Name,
-		Args: &config.TargetLoadPackingArgs{
-			WatcherAddress:            server.URL,
-			TargetUtilization:         v1beta2.DefaultTargetUtilizationPercent,
-			DefaultRequestsMultiplier: v1beta2.DefaultRequestsMultiplier,
-		},
-	})
 
 	testCtx := util.InitTestSchedulerWithOptions(
 		t,
-		testutils.InitTestAPIServer(t, "sched-trimaran", nil),
+		testutils.InitTestMaster(t, "sched-trimaran", nil),
 		true,
-		scheduler.WithProfiles(cfg.Profiles...),
-		scheduler.WithFrameworkOutOfTreeRegistry(fwkruntime.Registry{targetloadpacking.Name: targetloadpacking.New}),
+		scheduler.WithProfiles(profile),
+		scheduler.WithFrameworkOutOfTreeRegistry(registry),
 	)
 
 	defer testutils.CleanupTest(t, testCtx)
