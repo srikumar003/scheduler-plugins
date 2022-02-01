@@ -1,0 +1,15 @@
+apiVersion: kubescheduler.config.k8s.io/v1beta1
+kind: KubeSchedulerConfiguration
+leaderElection:
+  leaderElect: false
+clientConnection:
+  kubeconfig: "/etc/kubernetes/scheduler.conf"
+profiles:
+- schedulerName: scheduler-plugins-scheduler
+  plugins:
+    filter:
+      enabled:
+      - name: CacheAwarePlugin
+    score:
+      enabled:
+      - name: CacheAwarePlugin

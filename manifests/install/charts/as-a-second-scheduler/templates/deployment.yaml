@@ -44,8 +44,10 @@ spec:
         - /bin/kube-scheduler
         - --address=0.0.0.0
         - --leader-elect=false
-        - --config=/etc/kubernetes/scheduler-config.yaml
-        - --scheduler-name=scheduler-plugins-scheduler
+        - --config=/etc/kubernetes/cacheaware/scheduler-config.yaml
+        - --authentication-kubeconfig=/etc/kubernetes/scheduler.conf
+        - --authorization-kubeconfig=/etc/kubernetes/scheduler.conf
+        - --v=9
         image: {{ .Values.scheduler.image }}
         livenessProbe:
           httpGet:
@@ -59,16 +61,22 @@ spec:
             port: 10251
         resources:
           requests:
-            cpu: '0.1'
+            cpu: 100m
         securityContext:
           privileged: false
         volumeMounts:
-        - name: scheduler-config
-          mountPath: /etc/kubernetes
+        - name: kubeconfig
+          mountPath: /etc/kubernetes/scheduler.conf
           readOnly: true
+        - name: config-volume
+          mountPath: /etc/kubernetes/cacheaware
       hostNetwork: false
       hostPID: false
       volumes:
-      - name: scheduler-config
+      - name: kubeconfig
+        hostPath:
+          path: "/etc/kubernetes/scheduler.conf"
+          type: FileOrCreate
+      - name: config-volume
         configMap:
-          name: scheduler-config
+          name: cacheaware-config

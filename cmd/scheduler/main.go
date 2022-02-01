@@ -24,6 +24,7 @@ import (
 	"k8s.io/component-base/logs"
 	"k8s.io/kubernetes/cmd/kube-scheduler/app"
 
+	"sigs.k8s.io/scheduler-plugins/pkg/cacheaware"
 	"sigs.k8s.io/scheduler-plugins/pkg/capacityscheduling"
 	"sigs.k8s.io/scheduler-plugins/pkg/coscheduling"
 	"sigs.k8s.io/scheduler-plugins/pkg/crossnodepreemption"
@@ -57,6 +58,7 @@ func main() {
 		app.WithPlugin(crossnodepreemption.Name, crossnodepreemption.New),
 		app.WithPlugin(podstate.Name, podstate.New),
 		app.WithPlugin(qos.Name, qos.New),
+		app.WithPlugin(cacheaware.Name, cacheaware.NewCacheAwarePlugin),
 	)
 
 	// TODO: once we switch everything over to Cobra commands, we can go back to calling

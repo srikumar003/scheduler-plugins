@@ -3,6 +3,8 @@ module sigs.k8s.io/scheduler-plugins
 go 1.16
 
 require (
+	github.com/datashim-io/datashim/src/apiclient v0.0.0-20211213234305-cc463b9f305a
+	github.com/datashim-io/datashim/src/dataset-operator v0.0.0-20211109142116-4d777b15d1cd
 	github.com/google/go-cmp v0.5.5
 	github.com/google/uuid v1.1.2
 	github.com/k8stopologyawareschedwg/noderesourcetopology-api v0.0.12
@@ -12,10 +14,10 @@ require (
 	github.com/stretchr/testify v1.7.0
 	gonum.org/v1/gonum v0.6.2
 	k8s.io/api v0.22.3
-	k8s.io/apiextensions-apiserver v0.0.0
+	k8s.io/apiextensions-apiserver v0.17.2
 	k8s.io/apimachinery v0.22.3
 	k8s.io/apiserver v0.22.3
-	k8s.io/client-go v0.22.3
+	k8s.io/client-go v12.0.0+incompatible
 	k8s.io/code-generator v0.22.3
 	k8s.io/component-base v0.22.3
 	k8s.io/component-helpers v0.22.3
@@ -30,6 +32,7 @@ require (
 )
 
 replace (
+	github.com/docker/docker => github.com/moby/moby v0.7.3-0.20190826074503-38ab9da00309
 	k8s.io/api => k8s.io/api v0.22.3
 	k8s.io/apiextensions-apiserver => k8s.io/apiextensions-apiserver v0.22.3
 	k8s.io/apimachinery => k8s.io/apimachinery v0.22.3
